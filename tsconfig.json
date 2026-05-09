@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/db" },
+    { "path": "./packages/sdk-node" },
+    { "path": "./packages/mcp" },
+    { "path": "./apps/api" }
+  ]
+}

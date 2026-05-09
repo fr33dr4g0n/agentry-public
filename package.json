@@ -1,0 +1,24 @@
+{
+  "name": "agentry",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Agent-first error monitoring. The user's own Claude Code investigates errors via MCP.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "echo 'lint not configured (v0)'"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4",
+    "@types/node": "^22.9.0"
+  }
+}
