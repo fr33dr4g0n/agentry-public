@@ -4,6 +4,7 @@
 import { createClient } from "@libsql/client";
 
 const DROP_STATEMENTS: string[] = [
+  "DROP TABLE IF EXISTS webhooks",
   "DROP TABLE IF EXISTS posthog_projects",
   "DROP TABLE IF EXISTS deploys",
   "DROP TABLE IF EXISTS suppression_entries",
@@ -142,6 +143,23 @@ const STATEMENTS: string[] = [
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE cascade
   )`,
   `CREATE UNIQUE INDEX posthog_projects_ph_id_idx ON posthog_projects (posthog_project_id)`,
+
+  `CREATE TABLE webhooks (
+    id text PRIMARY KEY NOT NULL,
+    project_id text NOT NULL,
+    url text NOT NULL,
+    description text,
+    events text NOT NULL,
+    signing_secret_prefix text NOT NULL,
+    signing_secret_hash text NOT NULL,
+    active integer DEFAULT 1 NOT NULL,
+    created_at integer DEFAULT (unixepoch()) NOT NULL,
+    last_fired_at integer,
+    last_status integer,
+    last_error text,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
+  )`,
+  `CREATE INDEX webhooks_proj_idx ON webhooks (project_id, active)`,
 ];
 
 async function main() {

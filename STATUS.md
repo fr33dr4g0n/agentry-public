@@ -1,7 +1,7 @@
 # Agentry — Build Status
 
-**Last updated:** 2026-05-10 (post-install conversational menu — suggested_next_steps)
-**Phase:** ✅ v0 working end-to-end with capture (server + client + any language) + agent-driven query/visualization (no dashboard) + **post-install next-step menu** that hands the agent a curated list of "what would you like to do next?" prompts. PostHog gated on env vars.
+**Last updated:** 2026-05-10 (webhooks for "do X automatically when Y happens")
+**Phase:** ✅ v0 working end-to-end with capture (server + client + any language) + agent-driven query (no dashboard) + post-install next-step menu + **signed webhooks** for automation (auto-fix-on-error, deploy regression alerts, weekly digests). PostHog gated on env vars.
 
 ## Quickstart for the human (you, when you're back)
 
@@ -82,6 +82,26 @@ agentry/
 ├── CLAUDE.md                 Repo instructions for future Claude sessions
 └── docs/decisions.md         Append-only log of design decisions
 ```
+
+## Automation via webhooks
+
+Three event types fire signed POSTs at customer-controlled URLs:
+
+| event | when |
+|---|---|
+| `case.created` | first event of a new fingerprint lands |
+| `case.resolved` | a case status flips to `resolved` |
+| `deploy.recorded` | a deploy event is captured |
+
+```
+POST <your-url>
+  X-Agentry-Signature: t=1736500000,v1=<hex>
+  body: {"event":"case.created","delivered_at":...,"project_id":...,"data":{...}}
+```
+
+Verify with HMAC-SHA256(rawBody, signing_secret). The signing secret is shown once at registration. Signing secrets are encrypted at rest with `AGENTRY_TOKEN_ENC_KEY`.
+
+The MCP exposes `agentry_register_webhook`, `agentry_list_webhooks`, `agentry_test_webhook`, `agentry_delete_webhook`, and `agentry_automation_docs` (which returns paste-ready Cloudflare Worker templates for auto-fix-on-error, deploy regression alerts, etc.).
 
 ## No dashboard — the agent IS the dashboard
 

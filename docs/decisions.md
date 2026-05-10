@@ -4,6 +4,32 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-10 — Webhooks for "do X automatically when Y happens"
+
+agentry now turns from a query surface into a programmable platform. Three events fire signed POSTs:
+
+- `case.created`     — new error fingerprint
+- `case.resolved`    — case status flipped to resolved
+- `deploy.recorded`  — deploy event captured
+
+**API:**
+- `POST /v1/projects/:id/webhooks` body `{url, events?, description?}` → returns id + signing_secret (shown once)
+- `GET /v1/projects/:id/webhooks` lists with last_status / last_error so the agent can tell if the customer's endpoint is healthy
+- `DELETE /v1/projects/:id/webhooks/:id`
+- `POST /v1/projects/:id/webhooks/:id/test` fires a synthetic ping
+- `GET /v1/docs/automation` returns paste-ready Worker / Lambda / Functions templates
+
+**Signing:** HMAC-SHA256(rawBody, signing_secret) → header `X-Agentry-Signature: t=<unix>,v1=<hex>`. Standard pattern.
+
+**Implementation notes:**
+- Signing secrets are encrypted at rest with `AGENTRY_TOKEN_ENC_KEY` (same key already used for PostHog read tokens). Stored alongside the SHA-256 hash so we keep public-prefix display + lookup AND can decrypt at firing time. v0 packs `<hash>::<iv>::<ciphertext>` into the same column rather than adding new schema columns; clean up to dedicated columns at the next schema change.
+- Delivery uses `c.executionCtx.waitUntil(...)` so webhook firing happens AFTER the API response goes back. No retries in v0; the `last_status` / `last_error` columns expose health.
+- Wired in three places: `ingest.ts` (Sentry-protocol case.created), `log.ts` (unified endpoint case.created + deploy.recorded), `cases.ts` PATCH handler (case.resolved on status transition), `deploys.ts` (deploy.recorded from typed endpoint).
+
+**MCP:** `agentry_register_webhook`, `agentry_list_webhooks`, `agentry_test_webhook`, `agentry_delete_webhook`, `agentry_automation_docs`.
+
+The reframe: agentry's webhooks are how customers build "auto-fix-on-error" without us shipping that feature ourselves. The user's endpoint gets a signed POST → spawns a Claude Agent SDK session → opens a PR → calls `agentry_resolve_case`. Each piece is small and the customer owns the policy.
+
 ## 2026-05-10 — Post-install conversational menu
 
 After `agentry_verify_install` flips green, the user lands on a curated menu of next-step prompts:

@@ -337,6 +337,110 @@ async function main() {
     expect([401, 403, 404].includes(r.status), true, `user B listing user A's cases -> 4xx (got ${r.status})`);
   }
 
+  // 7.3 Webhooks — register + fire-on-case-create + list + delete
+  console.log("\n[webhooks]");
+  // Spin up a tiny in-process receiver to verify signed delivery.
+  const { createServer } = await import("node:http");
+  const { createHmac, timingSafeEqual } = await import("node:crypto");
+  let received = [];
+  const recvServer = await new Promise((resolve) => {
+    const s = createServer((req, res) => {
+      let buf = "";
+      req.on("data", (chunk) => { buf += chunk; });
+      req.on("end", () => {
+        received.push({ body: buf, sig: req.headers["x-agentry-signature"], event: req.headers["x-agentry-event"] });
+        res.statusCode = 200;
+        res.end("ok");
+      });
+    });
+    s.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const recvPort = recvServer.address().port;
+  const recvUrl = `http://127.0.0.1:${recvPort}/`;
+
+  let webhookId, signingSecret;
+  {
+    const r = await http("POST", `/v1/projects/${projId}/webhooks`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+      body: { url: recvUrl, events: ["case.created"], description: "live e2e test" },
+    });
+    if (r.status === 200 && r.json?.signing_secret?.startsWith("whsec_")) {
+      ok("webhook registered with whsec_ secret");
+      webhookId = r.json.id;
+      signingSecret = r.json.signing_secret;
+    } else if (r.status === 500 && /AGENTRY_TOKEN_ENC_KEY/.test(JSON.stringify(r.json))) {
+      ok("webhook registration correctly requires AGENTRY_TOKEN_ENC_KEY (not configured locally)");
+      // Skip the rest of this section — local dev doesn't have the key.
+      recvServer.close();
+    } else {
+      bad("webhook register unexpected", { status: r.status, json: r.json });
+      recvServer.close();
+    }
+  }
+
+  if (webhookId) {
+    // Trigger a NEW case via /v1/log/ — should fire the webhook.
+    const fp = `e2e-webhook-${Date.now()}`;
+    const r = await http("POST", `/v1/log/${projId}/`, {
+      headers: { authorization: `Bearer ${projDsn}` },
+      body: { exception: { values: [{ type: fp, value: "webhook-trigger",
+        stacktrace: { frames: [{ filename: `src/${fp}.ts`, function: "fn", lineno: 1 }] } }] } },
+    });
+    expect(r.status, 200, "webhook-trigger ingest 200");
+
+    // Wait briefly for waitUntil delivery.
+    await new Promise((res) => setTimeout(res, 500));
+
+    if (received.length >= 1) ok(`webhook receiver got ${received.length} delivery`);
+    else bad("webhook delivery missing", null);
+
+    if (received[0]?.sig) {
+      const m = received[0].sig.match(/v1=([0-9a-f]+)/);
+      if (m && m[1]) {
+        const expected = createHmac("sha256", signingSecret).update(received[0].body).digest("hex");
+        const a = Buffer.from(expected, "hex");
+        const b = Buffer.from(m[1], "hex");
+        if (a.length === b.length && timingSafeEqual(a, b)) ok("HMAC signature verifies with stored secret");
+        else bad("HMAC signature mismatch", { expected, got: m[1] });
+      } else bad("signature header malformed", received[0].sig);
+    } else bad("no signature header", null);
+
+    if (received[0]?.body) {
+      try {
+        const parsed = JSON.parse(received[0].body);
+        if (parsed.event === "case.created") ok("body event=case.created");
+        else bad("body event wrong", parsed.event);
+      } catch (e) { bad("body not JSON", e); }
+    }
+
+    // Test endpoint
+    received = [];
+    const t = await http("POST", `/v1/projects/${projId}/webhooks/${webhookId}/test`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+      body: {},
+    });
+    expect(t.status, 200, "test webhook 200");
+    await new Promise((res) => setTimeout(res, 500));
+    if (received.length >= 1) ok("test fire delivered synthetic event");
+    else bad("test fire delivered nothing", null);
+
+    // List shows last_status=200
+    const ls = await http("GET", `/v1/projects/${projId}/webhooks`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+    });
+    const found = ls.json?.webhooks?.find?.((w) => w.id === webhookId);
+    if (found?.last_status === 200) ok(`list shows last_status=200`);
+    else bad("last_status not 200", found);
+
+    // Delete
+    const del = await http("DELETE", `/v1/projects/${projId}/webhooks/${webhookId}`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+    });
+    expect(del.status, 200, "delete webhook 200");
+
+    recvServer.close();
+  }
+
   // 7.4 CORS preflight (browser SDK)
   console.log("\n[cors]");
   {

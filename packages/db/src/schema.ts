@@ -126,6 +126,25 @@ export const deploys = sqliteTable("deploys", {
   projTimeIdx: index("deploys_proj_time_idx").on(t.projectId, t.receivedAt),
 }));
 
+// Webhook subscriptions. Each project can register multiple URLs for specific
+// event types. Signing secret is stored as a hash; raw value shown once at creation.
+export const webhooks = sqliteTable("webhooks", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  description: text("description"),
+  events: text("events").notNull(),  // JSON array: ["case.created", "case.resolved", "deploy.recorded"]
+  signingSecretPrefix: text("signing_secret_prefix").notNull(),
+  signingSecretHash: text("signing_secret_hash").notNull(),
+  active: integer("active").notNull().default(1),  // 0/1 boolean
+  createdAt: integer("created_at").notNull().default(now),
+  lastFiredAt: integer("last_fired_at"),
+  lastStatus: integer("last_status"),
+  lastError: text("last_error"),
+}, (t) => ({
+  projIdx: index("webhooks_proj_idx").on(t.projectId, t.active),
+}));
+
 // One PostHog project per agentry user, auto-provisioned on first GitHub login.
 // Tokens are encrypted at rest using AES-GCM with AGENTRY_TOKEN_ENC_KEY.
 export const posthogProjects = sqliteTable("posthog_projects", {
@@ -149,3 +168,4 @@ export type AgentRun = typeof agentRuns.$inferSelect;
 export type SuppressionEntry = typeof suppressionEntries.$inferSelect;
 export type Deploy = typeof deploys.$inferSelect;
 export type PosthogProject = typeof posthogProjects.$inferSelect;
+export type Webhook = typeof webhooks.$inferSelect;

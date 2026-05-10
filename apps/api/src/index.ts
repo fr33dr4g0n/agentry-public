@@ -12,6 +12,7 @@ import trackRoutes from "./routes/track.js";
 import logRoutes from "./routes/log.js";
 import recipeRoutes from "./routes/recipes.js";
 import nextStepsRoutes from "./routes/next-steps.js";
+import webhookRoutes from "./routes/webhooks.js";
 import type { AppBindings, Env } from "./env.js";
 
 export function createApp() {
@@ -153,6 +154,9 @@ export function createApp() {
 
   // Suggested next-steps for post-install conversational prompts.
   app.route("/", nextStepsRoutes);
+
+  // Webhook subscriptions (signed POST delivery on case.created / case.resolved / deploy.recorded).
+  app.route("/", webhookRoutes);
 
   return app;
 }

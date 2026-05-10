@@ -21,6 +21,7 @@ import {
 } from "../middleware.js";
 import type { AppBindings } from "../env.js";
 import { recentDeploysFor } from "./deploys.js";
+import { fireWebhooks } from "../webhooks.js";
 
 // Cases that hang off /v1/projects/:project_id
 // IMPORTANT: this sub-app is mounted at /v1, so the middleware path here is
@@ -198,11 +199,35 @@ caseRouter.patch("/:case_id", async (c) => {
   }
 
   const db = getDb(c.env);
+  // Capture pre-state to detect transitions worth firing webhooks for.
+  const beforeRows = await db.select().from(cases).where(eq(cases.id, caseId)).limit(1);
+  const before = beforeRows[0];
   await db.update(cases).set(updates).where(eq(cases.id, caseId));
 
   const after = await db.select().from(cases).where(eq(cases.id, caseId)).limit(1);
   const row = after[0];
   if (!row) throw errors.notFound("case");
+
+  // Fire case.resolved if the status just transitioned into "resolved".
+  if (before && before.status !== "resolved" && row.status === "resolved") {
+    const waitUntil = (p: Promise<unknown>) =>
+      c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
+    await fireWebhooks(
+      c.env,
+      row.projectId,
+      "case.resolved",
+      {
+        case_id: row.id,
+        fingerprint: row.fingerprint,
+        error_type: row.errorType,
+        message: row.message,
+        agent_summary: row.agentSummary,
+        pr_url: row.prUrl,
+        last_deploy_sha: row.lastDeploySha,
+      },
+      { waitUntil },
+    );
+  }
 
   return c.json({
     id: row.id,

@@ -12,6 +12,7 @@ import type { IngestEvent, StackFrame } from "@agentry/shared";
 import { cases, events, projects, suppressionEntries } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { matchesPattern } from "./cases.js";
+import { fireWebhooks } from "../webhooks.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -181,6 +182,7 @@ async function handleIngest(c: Context<AppBindings>) {
     .limit(1);
 
   let caseId: string;
+  let isNewCase = false;
   if (existing[0]) {
     caseId = existing[0].id;
     await db
@@ -193,6 +195,7 @@ async function handleIngest(c: Context<AppBindings>) {
       })
       .where(eq(cases.id, caseId));
   } else {
+    isNewCase = true;
     caseId = uuidv7();
     const initialStatus =
       matched && matched.action === "auto_resolve" ? "resolved" : "open";
@@ -215,6 +218,27 @@ async function handleIngest(c: Context<AppBindings>) {
       agentSummary: initialSummary,
       prUrl: null,
     });
+  }
+
+  // Fire webhooks for case.created (new fingerprints only). waitUntil keeps
+  // delivery off the request critical path.
+  if (isNewCase) {
+    const waitUntil = (p: Promise<unknown>) =>
+      c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
+    await fireWebhooks(
+      c.env,
+      projectId,
+      "case.created",
+      {
+        case_id: caseId,
+        fingerprint,
+        error_type: errorType,
+        message,
+        last_deploy_sha: deploySha,
+        first_seen_at: now,
+      },
+      { waitUntil },
+    );
   }
 
   return c.json(

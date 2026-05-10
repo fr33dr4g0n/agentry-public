@@ -139,6 +139,21 @@ export async function makeTestEnv(opts?: {
         created_at integer NOT NULL DEFAULT (unixepoch())
       )`,
       `CREATE UNIQUE INDEX posthog_projects_ph_id_idx ON posthog_projects (posthog_project_id)`,
+      `CREATE TABLE webhooks (
+        id text PRIMARY KEY,
+        project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        url text NOT NULL,
+        description text,
+        events text NOT NULL,
+        signing_secret_prefix text NOT NULL,
+        signing_secret_hash text NOT NULL,
+        active integer NOT NULL DEFAULT 1,
+        created_at integer NOT NULL DEFAULT (unixepoch()),
+        last_fired_at integer,
+        last_status integer,
+        last_error text
+      )`,
+      `CREATE INDEX webhooks_proj_idx ON webhooks (project_id, active)`,
     ],
     "write",
   );

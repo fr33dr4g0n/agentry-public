@@ -25,6 +25,7 @@ import { cases, deploys, events, projects, suppressionEntries } from "@agentry/d
 import { getDb } from "../db.js";
 import { matchesPattern } from "./cases.js";
 import { forwardCapture, isPosthogConfigured } from "../posthog.js";
+import { fireWebhooks } from "../webhooks.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -221,6 +222,7 @@ async function handleErrorSignal(
     .limit(1);
 
   let caseId: string;
+  let isNewCase = false;
   if (existing[0]) {
     caseId = existing[0].id;
     await db
@@ -233,6 +235,7 @@ async function handleErrorSignal(
       })
       .where(eq(cases.id, caseId));
   } else {
+    isNewCase = true;
     caseId = uuidv7();
     const initialStatus =
       matched && matched.action === "auto_resolve" ? "resolved" : "open";
@@ -256,6 +259,25 @@ async function handleErrorSignal(
     });
   }
 
+  if (isNewCase) {
+    const waitUntil = (p: Promise<unknown>) =>
+      c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
+    await fireWebhooks(
+      c.env,
+      projectId,
+      "case.created",
+      {
+        case_id: caseId,
+        fingerprint,
+        error_type: errorType,
+        message,
+        last_deploy_sha: deploySha,
+        first_seen_at: now,
+      },
+      { waitUntil },
+    );
+  }
+
   return c.json({
     detected_kind: "error" as const,
     event_id: eventId,
@@ -277,17 +299,24 @@ async function handleDeploySignal(
 
   const id = uuidv7();
   const now = Math.floor(Date.now() / 1000);
+  const branch = typeof b.branch === "string" ? b.branch.slice(0, 200) : null;
+  const environment = typeof b.environment === "string" ? b.environment.slice(0, 100) : null;
+  const message = typeof b.message === "string" ? b.message.slice(0, 4000) : null;
+  const url = typeof b.url === "string" ? b.url.slice(0, 500) : null;
+  const actor = typeof b.actor === "string" ? b.actor.slice(0, 200) : null;
   await db.insert(deploys).values({
-    id,
-    projectId,
-    sha,
-    branch: typeof b.branch === "string" ? b.branch.slice(0, 200) : null,
-    environment: typeof b.environment === "string" ? b.environment.slice(0, 100) : null,
-    message: typeof b.message === "string" ? b.message.slice(0, 4000) : null,
-    url: typeof b.url === "string" ? b.url.slice(0, 500) : null,
-    actor: typeof b.actor === "string" ? b.actor.slice(0, 200) : null,
-    receivedAt: now,
+    id, projectId, sha, branch, environment, message, url, actor, receivedAt: now,
   });
+
+  const waitUntil = (p: Promise<unknown>) =>
+    c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
+  await fireWebhooks(
+    c.env,
+    projectId,
+    "deploy.recorded",
+    { deploy_id: id, sha, branch, environment, message, url, actor, received_at: now },
+    { waitUntil },
+  );
 
   return c.json({
     detected_kind: "deploy" as const,

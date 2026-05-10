@@ -4,6 +4,7 @@ import { errors, parseDsn, sha256Hex, uuidv7 } from "@agentry/shared";
 import { deploys, projects } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey, requireProjectAccess } from "../middleware.js";
+import { fireWebhooks } from "../webhooks.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -91,17 +92,24 @@ async function handleDeployIngest(c: Parameters<typeof router.post>[1] extends i
 
   const id = uuidv7();
   const now = Math.floor(Date.now() / 1000);
+  const branch = typeof b.branch === "string" ? b.branch.slice(0, 200) : null;
+  const environment = typeof b.environment === "string" ? b.environment.slice(0, 100) : null;
+  const message = typeof b.message === "string" ? b.message.slice(0, 4000) : null;
+  const url = typeof b.url === "string" ? b.url.slice(0, 500) : null;
+  const actor = typeof b.actor === "string" ? b.actor.slice(0, 200) : null;
   await db.insert(deploys).values({
-    id,
-    projectId,
-    sha,
-    branch: typeof b.branch === "string" ? b.branch.slice(0, 200) : null,
-    environment: typeof b.environment === "string" ? b.environment.slice(0, 100) : null,
-    message: typeof b.message === "string" ? b.message.slice(0, 4000) : null,
-    url: typeof b.url === "string" ? b.url.slice(0, 500) : null,
-    actor: typeof b.actor === "string" ? b.actor.slice(0, 200) : null,
-    receivedAt: now,
+    id, projectId, sha, branch, environment, message, url, actor, receivedAt: now,
   });
+
+  const waitUntil = (p: Promise<unknown>) =>
+    c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
+  await fireWebhooks(
+    c.env,
+    projectId,
+    "deploy.recorded",
+    { deploy_id: id, sha, branch, environment, message, url, actor, received_at: now },
+    { waitUntil },
+  );
 
   return c.json({
     id,

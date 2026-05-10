@@ -95,6 +95,117 @@ ad-hoc SQL is not currently exposed — use recipes or the typed endpoints
    shape. Use Mermaid only when the UI supports it. NEVER fabricate data.
 `;
 
+const AUTOMATION_DOCS = `# agentry — automation patterns
+
+agentry's webhooks turn it from a query surface into a programmable platform. When
+something interesting happens (new error, deploy, case resolution), agentry signs the
+event and POSTs it to a URL you control. Your endpoint then does whatever — opens a
+PR, posts to Slack, runs a Claude Agent SDK session, fires a downstream API call.
+
+## Events
+
+| event | when | data |
+|---|---|---|
+| \`case.created\` | first event of a new fingerprint lands | case_id, fingerprint, error_type, message, last_deploy_sha, first_seen_at |
+| \`case.resolved\` | a case status flips to "resolved" | case_id, fingerprint, error_type, message, agent_summary, pr_url, last_deploy_sha |
+| \`deploy.recorded\` | a deploy event is captured | deploy_id, sha, branch, environment, message, url, actor, received_at |
+
+## Wire format
+
+POST request to your URL with body:
+\`\`\`json
+{
+  "event": "case.created",
+  "delivered_at": 1736500000,
+  "project_id": "...",
+  "data": { ... event-specific ... }
+}
+\`\`\`
+
+Headers:
+- \`X-Agentry-Signature: t=<unix>,v1=<hex>\` — HMAC-SHA256(rawBody, signing_secret)
+- \`X-Agentry-Webhook-Id: <wh_…>\`
+- \`Content-Type: application/json\`
+
+Verify in your endpoint:
+\`\`\`ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+function verify(rawBody: string, header: string, secret: string): boolean {
+  const m = header.match(/v1=([0-9a-f]+)/);
+  if (!m || !m[1]) return false;
+  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+  const a = Buffer.from(expected, "hex");
+  const b = Buffer.from(m[1], "hex");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+\`\`\`
+
+## Pattern: auto-fix on error (Cloudflare Worker template)
+
+When a new case lands, spawn a Claude Agent SDK session that investigates and
+opens a PR. Your endpoint just enqueues; the actual work runs async.
+
+\`\`\`ts
+// worker.ts — deploy with: wrangler deploy
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+export default {
+  async fetch(req: Request, env: { AGENTRY_WEBHOOK_SECRET: string; QUEUE: Queue<unknown> }) {
+    const body = await req.text();
+    const sig = req.headers.get("x-agentry-signature") ?? "";
+    if (!verify(body, sig, env.AGENTRY_WEBHOOK_SECRET)) {
+      return new Response("bad signature", { status: 401 });
+    }
+    const payload = JSON.parse(body);
+    if (payload.event !== "case.created") return new Response("ignored", { status: 200 });
+    // Fast 2xx — actual investigation runs in a queue consumer with the agent SDK.
+    await env.QUEUE.send({ case_id: payload.data.case_id, project_id: payload.project_id });
+    return new Response("ok", { status: 200 });
+  },
+};
+\`\`\`
+
+The queue consumer (a separate Worker / a Lambda / a long-lived service) calls
+agentry_get_case to fetch the stack + recent_deploys, runs the Claude Agent SDK
+to investigate the suspect file in the linked repo, opens a PR with the fix, and
+calls agentry_resolve_case with the PR URL.
+
+## Pattern: deploy regression alerts
+
+Listen for \`deploy.recorded\`, then 30 minutes later run \`errors_after_last_deploy\`
+recipe. If non-empty, post to Slack:
+
+\`\`\`ts
+if (payload.event === "deploy.recorded") {
+  const sha = payload.data.sha;
+  // Schedule a check 30 minutes later (Cloudflare Workers Cron / Durable Object alarm)
+  await env.SCHEDULE.put(\`check-\${sha}\`, JSON.stringify({ at: Date.now() + 30 * 60_000 }));
+}
+\`\`\`
+
+## Pattern: weekly digest
+
+Cron-triggered (no webhook needed) — run agentry_run_recipe(weekly_review)
+on a schedule, post the result to a Slack incoming-webhook URL.
+
+## Pattern: open Linear issue on case threshold
+
+Listen for \`case.created\`, store in a counter keyed on (project_id, day). When
+the counter crosses your threshold, open a Linear issue with \`agentry_get_case\`
+detail in the body.
+
+## Tips
+
+- Always 200 quickly — do real work async.
+- Use the \`X-Agentry-Webhook-Id\` header for idempotency (de-dup if your queue
+  re-delivers).
+- Watch \`agentry_list_webhooks\` for last_status and last_error — agentry shows
+  you when your endpoint is failing.
+- For local dev, point the URL at \`http://localhost:8788/...\` running on
+  \`wrangler dev --remote\` and tunnel with cloudflared (or use ngrok).
+`;
+
 const LLMS_TXT = `# agentry
 
 Agent-first incident inbox: errors, analytics, deploys — all routed to the user's
@@ -151,6 +262,16 @@ origins; agentry's MCP server is the only intended client there.
 ## Querying / visualization (no dashboard, agent-driven)
 
 agentry has no UI dashboard. The agent IS the dashboard. Two surfaces:
+
+### Webhooks — for "do X automatically when Y happens"
+- POST /v1/projects/:id/webhooks               {url, events?, description?}     -> {id, signing_secret} (shown once)
+- GET  /v1/projects/:id/webhooks
+- DELETE /v1/projects/:id/webhooks/:id
+- POST /v1/projects/:id/webhooks/:id/test      fires a synthetic ping
+- GET  /v1/docs/automation                     paste-ready Worker templates for auto-fix-on-error etc.
+
+Events: case.created, case.resolved, deploy.recorded. Body is signed with
+HMAC-SHA256; verify via X-Agentry-Signature header.
 
 ### Recipes — canned queries for the most-asked questions
 - GET /v1/recipes                      list catalog (no auth)
@@ -257,6 +378,10 @@ router.get("/v1/install/sdk/node", (c) => {
 
 router.get("/v1/docs/query", (c) => {
   return c.text(QUERY_DOCS, 200, { "content-type": "text/markdown; charset=utf-8" });
+});
+
+router.get("/v1/docs/automation", (c) => {
+  return c.text(AUTOMATION_DOCS, 200, { "content-type": "text/markdown; charset=utf-8" });
 });
 
 router.get("/v1/privacy/disclosure", (c) => {

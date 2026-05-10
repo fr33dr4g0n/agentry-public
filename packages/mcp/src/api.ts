@@ -361,6 +361,51 @@ export const api = {
       `/v1/projects/${encodeURIComponent(projectId)}/next-steps`,
     );
   },
+  // Webhooks
+  registerWebhook(
+    cfg: AgentryConfig,
+    projectId: string,
+    body: { url: string; events?: string[]; description?: string },
+  ): Promise<{
+    id: string;
+    url: string;
+    events: string[];
+    signing_secret: string;
+    signing_secret_prefix: string;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/webhooks`,
+      { method: "POST", body },
+    );
+  },
+  listWebhooks(cfg: AgentryConfig, projectId: string): Promise<{
+    webhooks: Array<Record<string, unknown>>;
+  }> {
+    return apiFetch(cfg, `/v1/projects/${encodeURIComponent(projectId)}/webhooks`);
+  },
+  deleteWebhook(cfg: AgentryConfig, projectId: string, id: string): Promise<{ ok: boolean }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/webhooks/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+  },
+  testWebhook(cfg: AgentryConfig, projectId: string, id: string): Promise<{ ok: boolean }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/webhooks/${encodeURIComponent(id)}/test`,
+      { method: "POST", body: {} },
+    );
+  },
+  getAutomationDocs(cfg: AgentryConfig): Promise<string> {
+    const url = `${cfg.server_url.replace(/\/$/, "")}/v1/docs/automation`;
+    return fetch(url).then(async (res) => {
+      if (!res.ok) throw new Error(`docs fetch ${res.status}`);
+      return res.text();
+    });
+  },
 };
 
 export interface InstallGuideStep {

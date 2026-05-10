@@ -378,6 +378,77 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "agentry_register_webhook",
+    description:
+      "Register a webhook URL to receive signed POSTs when interesting things happen. " +
+      "Events: 'case.created' (new error fingerprint), 'case.resolved' (case status flips to resolved), " +
+      "'deploy.recorded'. Returns the signing_secret ONCE — store it. The customer's endpoint must " +
+      "verify X-Agentry-Signature: t=<unix>,v1=<hex> using HMAC-SHA256(rawBody, signing_secret). " +
+      "This is the foundation for automation flows like auto-fix-on-error.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "https:// URL to receive deliveries" },
+        events: {
+          type: "array",
+          items: { type: "string", enum: ["case.created", "case.resolved", "deploy.recorded"] },
+          description: "Defaults to all three.",
+        },
+        description: { type: "string" },
+        project_id: { type: "string", description: "Defaults to local default project." },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_list_webhooks",
+    description:
+      "List webhooks registered on a project, including last_status / last_error so the agent " +
+      "can tell if the customer's endpoint is healthy.",
+    inputSchema: {
+      type: "object",
+      properties: { project_id: { type: "string" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_test_webhook",
+    description:
+      "Fire a synthetic test event to a registered webhook. Useful right after registration to " +
+      "confirm the signing secret + endpoint are wired up correctly.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        webhook_id: { type: "string" },
+        project_id: { type: "string" },
+      },
+      required: ["webhook_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_delete_webhook",
+    description: "Remove a webhook subscription. No further deliveries.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        webhook_id: { type: "string" },
+        project_id: { type: "string" },
+      },
+      required: ["webhook_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_automation_docs",
+    description:
+      "Return markdown documentation showing common automation patterns built on agentry's webhooks: " +
+      "auto-fix-on-error, deploy regression alerts, weekly digests, etc. Each pattern includes a " +
+      "ready-to-deploy Cloudflare Worker / Vercel function template the agent can drop into the customer's repo.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
     name: "agentry_suggested_next_steps",
     description:
       "After install/verify, surface this to the user: a curated list of 'what would you like to do " +
@@ -629,6 +700,27 @@ export async function dispatchTool(
         return await handleSuggestedNextSteps(
           a.project_id ? String(a.project_id) : undefined,
         );
+      case "agentry_register_webhook":
+        return await handleRegisterWebhook({
+          url: String(a.url ?? ""),
+          events: Array.isArray(a.events) ? (a.events as unknown[]).map(String) : undefined,
+          description: a.description ? String(a.description) : undefined,
+          project_id: a.project_id ? String(a.project_id) : undefined,
+        });
+      case "agentry_list_webhooks":
+        return await handleListWebhooks(a.project_id ? String(a.project_id) : undefined);
+      case "agentry_test_webhook":
+        return await handleTestWebhook({
+          webhook_id: String(a.webhook_id ?? ""),
+          project_id: a.project_id ? String(a.project_id) : undefined,
+        });
+      case "agentry_delete_webhook":
+        return await handleDeleteWebhook({
+          webhook_id: String(a.webhook_id ?? ""),
+          project_id: a.project_id ? String(a.project_id) : undefined,
+        });
+      case "agentry_automation_docs":
+        return await handleAutomationDocs();
       default:
         return {
           error: {
@@ -1567,5 +1659,101 @@ async function handleSuggestedNextSteps(projectId?: string): Promise<ToolResult>
       "    3. <title> — <description>\n\n" +
       "When the user picks one, paste the matching `prompt_template` as the user's next prompt " +
       "(or just execute the listed `uses` directly).",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Webhooks
+// ---------------------------------------------------------------------------
+
+function pickProjectId(cfg: AgentryConfig, projectId?: string): string | null {
+  return projectId ?? cfg.default_project_id ?? null;
+}
+
+async function handleRegisterWebhook(input: {
+  url: string;
+  events?: string[];
+  description?: string;
+  project_id?: string;
+}): Promise<ToolResult> {
+  if (!input.url || !/^https?:\/\//.test(input.url)) {
+    return {
+      error: {
+        code: "missing_url",
+        message: "url is required and must be http(s)",
+        next_action: "Ask the user for the receiving URL (their Worker / Function endpoint).",
+      },
+    };
+  }
+  const cfg = loadConfig();
+  if (!cfg.api_key) {
+    return { error: { code: "no_key", message: "No API key on file.", next_action: "Call `agentry_login` first." } };
+  }
+  const pid = pickProjectId(cfg, input.project_id);
+  if (!pid) {
+    return { error: { code: "no_project", message: "No project specified.", next_action: "Pass project_id." } };
+  }
+  const body: { url: string; events?: string[]; description?: string } = { url: input.url };
+  if (input.events) body.events = input.events;
+  if (input.description) body.description = input.description;
+  const resp = await api.registerWebhook(cfg, pid, body);
+  return {
+    ...resp,
+    project_id: pid,
+    next_action:
+      "STORE THE signing_secret NOW — it won't be shown again. " +
+      "Tell the user to add it to their endpoint's env. Then call agentry_test_webhook to verify the wiring.",
+  };
+}
+
+async function handleListWebhooks(projectId?: string): Promise<ToolResult> {
+  const cfg = loadConfig();
+  if (!cfg.api_key) {
+    return { error: { code: "no_key", message: "No API key.", next_action: "Call `agentry_login`." } };
+  }
+  const pid = pickProjectId(cfg, projectId);
+  if (!pid) return { error: { code: "no_project", message: "No project specified.", next_action: "Pass project_id." } };
+  const resp = await api.listWebhooks(cfg, pid);
+  return { project_id: pid, ...resp };
+}
+
+async function handleTestWebhook(input: { webhook_id: string; project_id?: string }): Promise<ToolResult> {
+  if (!input.webhook_id) {
+    return { error: { code: "missing_webhook_id", message: "webhook_id is required.", next_action: "Pass webhook id from agentry_list_webhooks." } };
+  }
+  const cfg = loadConfig();
+  if (!cfg.api_key) return { error: { code: "no_key", message: "No API key.", next_action: "Call `agentry_login`." } };
+  const pid = pickProjectId(cfg, input.project_id);
+  if (!pid) return { error: { code: "no_project", message: "No project specified.", next_action: "Pass project_id." } };
+  const resp = await api.testWebhook(cfg, pid, input.webhook_id);
+  return {
+    ...resp,
+    project_id: pid,
+    next_action:
+      "Test fired. Call agentry_list_webhooks to see last_status — should be 200 if your endpoint accepted it.",
+  };
+}
+
+async function handleDeleteWebhook(input: { webhook_id: string; project_id?: string }): Promise<ToolResult> {
+  if (!input.webhook_id) {
+    return { error: { code: "missing_webhook_id", message: "webhook_id is required.", next_action: "Pass webhook id." } };
+  }
+  const cfg = loadConfig();
+  if (!cfg.api_key) return { error: { code: "no_key", message: "No API key.", next_action: "Call `agentry_login`." } };
+  const pid = pickProjectId(cfg, input.project_id);
+  if (!pid) return { error: { code: "no_project", message: "No project specified.", next_action: "Pass project_id." } };
+  const resp = await api.deleteWebhook(cfg, pid, input.webhook_id);
+  return { ...resp, project_id: pid };
+}
+
+async function handleAutomationDocs(): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const md = await api.getAutomationDocs(cfg);
+  return {
+    docs_markdown: md,
+    next_action:
+      "Read the automation patterns. Each pattern includes a paste-ready Worker template the agent " +
+      "can drop into the customer's repo. After deploying their endpoint, call agentry_register_webhook " +
+      "with the URL, then agentry_test_webhook to confirm.",
   };
 }
