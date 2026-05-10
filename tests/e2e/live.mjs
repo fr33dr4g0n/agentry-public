@@ -70,29 +70,37 @@ async function main() {
     expect(r.json?.error?.code, "not_found", "404 has code=not_found");
   }
 
-  // 2. Auth
+  // 2. Auth — uses the test-login backdoor; production flow is GitHub device.
   console.log("\n[auth]");
   let aliceKey, aliceUserId;
   {
-    const r = await http("POST", "/v1/auth/signup", { body: { email: userA } });
-    expect(r.status, 200, "signup 200");
+    const r = await http("POST", "/v1/auth/_test/login", { body: { email: userA } });
+    expect(r.status, 200, "test-login 200");
     if (r.json?.api_key?.startsWith("agk_")) ok("api_key prefix agk_");
     else bad("api_key bad shape", r.json);
     aliceKey = r.json.api_key;
     aliceUserId = r.json.user_id;
+    if (r.json?.github?.username) ok(`github username surfaced: ${r.json.github.username}`);
+    else bad("github metadata missing", r.json);
   }
   {
-    const r = await http("POST", "/v1/auth/signup", { body: { email: userA } });
-    expect(r.status, 200, "signup-twice 200");
+    const r = await http("POST", "/v1/auth/_test/login", { body: { email: userA } });
+    expect(r.status, 200, "test-login-twice 200");
     if (r.json?.user_id === aliceUserId) ok("same email -> same user_id");
-    else bad("user_id mismatch on re-signup", { first: aliceUserId, second: r.json?.user_id });
-    if (r.json?.api_key !== aliceKey) ok("re-signup mints new key");
-    else bad("re-signup returned same key", null);
+    else bad("user_id mismatch on re-login", { first: aliceUserId, second: r.json?.user_id });
+    if (r.json?.api_key !== aliceKey) ok("re-login mints new key");
+    else bad("re-login returned same key", null);
   }
   {
-    const r = await http("POST", "/v1/auth/signup", { body: { email: "not-an-email" } });
-    expect(r.status, 400, "signup invalid email -> 400");
-    expect(r.json?.error?.code, "invalid_payload", "invalid_payload code");
+    // Device flow start should reach GitHub and either succeed or fail predictably.
+    const r = await http("POST", "/v1/auth/device", { body: {} });
+    if (r.status === 200 && r.json?.user_code) ok(`github device flow start ok (user_code: ${r.json.user_code})`);
+    else bad("device flow start unexpected", { status: r.status, json: r.json });
+  }
+  {
+    // Device poll without device_code is a 400.
+    const r = await http("POST", "/v1/auth/device/poll", { body: {} });
+    expect(r.status, 400, "device poll empty body -> 400");
   }
   {
     const r = await http("POST", "/v1/auth/keys/rotate", { headers: { authorization: `Bearer ${aliceKey}` } });
@@ -309,7 +317,7 @@ async function main() {
   console.log("\n[tenancy]");
   let bobKey;
   {
-    const r = await http("POST", "/v1/auth/signup", { body: { email: userB } });
+    const r = await http("POST", "/v1/auth/_test/login", { body: { email: userB } });
     bobKey = r.json.api_key;
   }
   {

@@ -8,7 +8,9 @@ import * as schema from "@agentry/db/schema";
 export interface TestEnv {
   TURSO_DATABASE_URL: string;
   TURSO_AUTH_TOKEN: string;
-  ALLOW_UNVERIFIED_SIGNUP: string;
+  GITHUB_CLIENT_ID: string;
+  GITHUB_CLIENT_SECRET: string;
+  ENABLE_TEST_LOGIN: string;
 }
 
 // Cache so getDb() returns the same connection within one test.
@@ -18,7 +20,7 @@ const dbByUrl = new Map<
 >();
 
 export async function makeTestEnv(opts?: {
-  allowSignup?: boolean;
+  enableTestLogin?: boolean;
 }): Promise<TestEnv> {
   const url = `:memory:#${Math.random().toString(36).slice(2)}`;
   const client = createLibsql({ url: ":memory:" });
@@ -29,10 +31,14 @@ export async function makeTestEnv(opts?: {
     [
       `CREATE TABLE users (
         id text PRIMARY KEY,
-        email text NOT NULL,
+        github_id integer NOT NULL,
+        github_username text NOT NULL,
+        email text,
+        avatar_url text,
         created_at integer NOT NULL DEFAULT (unixepoch())
       )`,
-      `CREATE UNIQUE INDEX users_email_idx ON users (email)`,
+      `CREATE UNIQUE INDEX users_github_id_idx ON users (github_id)`,
+      `CREATE INDEX users_email_idx ON users (email)`,
       `CREATE TABLE api_keys (
         id text PRIMARY KEY,
         user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -120,7 +126,9 @@ export async function makeTestEnv(opts?: {
   return {
     TURSO_DATABASE_URL: url,
     TURSO_AUTH_TOKEN: "",
-    ALLOW_UNVERIFIED_SIGNUP: opts?.allowSignup === false ? "false" : "true",
+    GITHUB_CLIENT_ID: "test-client-id",
+    GITHUB_CLIENT_SECRET: "test-client-secret",
+    ENABLE_TEST_LOGIN: opts?.enableTestLogin === false ? "false" : "true",
   };
 }
 

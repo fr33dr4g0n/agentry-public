@@ -1,7 +1,7 @@
 # Agentry — Build Status
 
-**Last updated:** 2026-05-09
-**Phase:** ✅ v0 working end-to-end. Awaiting your sanity check.
+**Last updated:** 2026-05-10 (GitHub OAuth landed)
+**Phase:** ✅ v0 working end-to-end with GitHub device-flow auth. Awaiting your sanity check.
 
 ## Quickstart for the human (you, when you're back)
 
@@ -41,7 +41,9 @@ npx wrangler login
 # 2. Set production secrets (paste these — they're already in .dev.vars locally)
 npx wrangler secret put TURSO_DATABASE_URL    # libsql://agentry-hexa.aws-us-west-2.turso.io
 npx wrangler secret put TURSO_AUTH_TOKEN      # (the long token you gave me)
-npx wrangler secret put ALLOW_UNVERIFIED_SIGNUP   # true   ← see warning below
+npx wrangler secret put GITHUB_CLIENT_ID      # Ov23li3FBmbKhlhBgRMU
+npx wrangler secret put GITHUB_CLIENT_SECRET  # c6e60b4b2ebd26a1d3f12aad2078cd74f6b52eae
+# DO NOT set ENABLE_TEST_LOGIN in prod — it's the local test-only backdoor.
 
 # 3. Deploy
 npx wrangler deploy
@@ -51,8 +53,8 @@ npx wrangler deploy
 AGENTRY_SERVER_URL=https://agentry-api.<your-subdomain>.workers.dev claude mcp add agentry --scope user -- node /Users/henrikh/Documents/code/agentry/packages/mcp/dist/index.js
 ```
 
-> ⚠️ **Don't share that deployed URL publicly until magic-link auth lands.**
-> v0 has open signup. Anyone who hits `/v1/auth/signup` can mint keys until you add email verification (see [Known v0 limits](#known-v0-limits)).
+> ✅ **The deployed URL is now safe to share.** GitHub device flow vouches for every user — there's no open-signup endpoint.
+> The only auth backdoor is `/v1/auth/_test/login`, gated behind `ENABLE_TEST_LOGIN=true`, which the prod secret store should never set.
 
 ## What got built
 
@@ -98,18 +100,19 @@ agentry/
 
 ## How the MCP onboarding actually feels
 
-I simulated it cold (fresh `~/.agentry/config.json`):
-
 ```
 >>> agentry_status   (cold)
 state: no_key
-next_action: "Ask the user for their email, then call agentry_signup"
+next_action: "Call agentry_login to authenticate via GitHub (no email or password required)"
 
->>> agentry_signup   (alice@example.com)
-state: ok
-api_key persisted to ~/.agentry/config.json
+>>> agentry_login    (mode: full — blocks until done)
+returns:
+  verification_uri: https://github.com/login/device
+  user_code: WDJB-MJHT
+... agent shows code to user, user authorizes ...
+returns: { ok: true, user_id, github: { username, email }, api_key persisted }
 
->>> agentry_status   (after signup)
+>>> agentry_status   (after login)
 state: no_project
 next_action: "Ask the user for a project name, then call agentry_create_project"
 
@@ -120,13 +123,13 @@ returns: { dsn, install_snippet (paste-ready), local_path }
 returns: { case_id }, "Call agentry_get_case to see how it looks"
 ```
 
+If the agent prefers to control the polling loop itself (e.g. show the code to the user and confirm before polling), call `agentry_login` with `mode: "start_only"` first, then `mode: "poll_once"` with the returned `device_code`.
+
 ## Known v0 limits (intentional, to be fixed before public launch)
 
 These are flagged in [docs/decisions.md](./docs/decisions.md) and the implementation review:
 
-1. **No email verification** — same email always returns a working key. **The deploy must stay private.** Fix: magic-link via Resend, then drop `ALLOW_UNVERIFIED_SIGNUP`.
-2. **No rate limiting on `/v1/auth/signup`** — pair with point #1 above. Fix: per-IP leaky bucket via Workers KV or Durable Object.
-3. **Race on first event for a fingerprint** — two concurrent ingest requests with the same fingerprint may both try to insert a new case row; one will hit the unique index and 500, the SDK will retry. Fix: `INSERT ... ON CONFLICT(...) DO UPDATE`. Rare in practice at v0 volume.
+1. **Race on first event for a fingerprint** — two concurrent ingest requests with the same fingerprint may both try to insert a new case row; one will hit the unique index and 500, the SDK will retry. Fix: `INSERT ... ON CONFLICT(...) DO UPDATE`. Rare in practice at v0 volume.
 4. **Suppressions are substring-only** — regex was tempting but exposes ReDoS. Re-introduce when we can run patterns under a hard timeout (RE2 in workers, or syntax-restricted globs).
 5. **No PII scrubbing on stored `request` / `extra` / `tags` / `user`** — defensive scrubbing of headers, cookies, secrets is deferred. The fields are accepted via `IngestEventSchema.passthrough()` and persisted as JSON. Add a scrubber before the DB write.
 6. **`requireApiKey` writes `lastUsedAt` on every authed request** — should use `executionCtx.waitUntil()` to defer or skip if recently updated. Doubles DB writes today.

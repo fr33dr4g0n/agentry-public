@@ -26,12 +26,14 @@ async function api(method, path, body, headers = {}) {
 
 console.log("\n→ dogfood as if a developer in musicvideogenerator");
 
-// Step 1: signup
-console.log("\n[step 1] signup");
-const su = await api("POST", "/v1/auth/signup", { email });
-if (su.status !== 200) { console.error("signup failed:", su); process.exit(1); }
+// Step 1: log in via the test-login backdoor (production users go through
+// GitHub device flow; the backdoor exists only when ENABLE_TEST_LOGIN=true).
+console.log("\n[step 1] test-login");
+const su = await api("POST", "/v1/auth/_test/login", { email });
+if (su.status !== 200) { console.error("test-login failed:", su); process.exit(1); }
 const apiKey = su.json.api_key;
 console.log("  ✓ got api_key", apiKey.slice(0, 12) + "…");
+console.log("  ✓ github user", su.json.github?.username);
 
 // Step 2: create project
 console.log("\n[step 2] create project");

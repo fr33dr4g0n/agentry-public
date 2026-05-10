@@ -29,30 +29,33 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
-    name: "agentry_signup",
+    name: "agentry_login",
     description:
-      "Sign the user up by email. Returns an API key and stores it locally. " +
-      "v0 has no email verification — the same email can be re-signed up to recover a lost key.",
+      "Authenticate the user via GitHub device flow. " +
+      "Starts the flow, shows the user a verification URL and a short code, then polls until they authorize. " +
+      "Returns an API key and stores it locally. " +
+      "By default the tool blocks until success or timeout; " +
+      "use `mode: 'start_only'` to return the verification details without polling, or `mode: 'poll_once'` with `device_code` to do a single non-blocking poll.",
     inputSchema: {
       type: "object",
       properties: {
-        email: { type: "string", description: "User's email address" },
+        mode: {
+          type: "string",
+          enum: ["full", "start_only", "poll_once"],
+          description:
+            "'full' (default) starts and polls until done. " +
+            "'start_only' returns the verification URL + code + device_code immediately. " +
+            "'poll_once' takes device_code and does a single poll.",
+        },
+        device_code: {
+          type: "string",
+          description: "Required when mode='poll_once'.",
+        },
+        timeout_seconds: {
+          type: "number",
+          description: "Cap on total polling time when mode='full'. Defaults to 180.",
+        },
       },
-      required: ["email"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "agentry_recover",
-    description:
-      "Recover access by re-signing up with the same email. Mints a fresh API key " +
-      "and stores it locally. Use this when the user has lost their key.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        email: { type: "string", description: "User's email address" },
-      },
-      required: ["email"],
       additionalProperties: false,
     },
   },
@@ -164,7 +167,7 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
         suppress_pattern: {
           type: "string",
           description:
-            "Optional fingerprint pattern (substring or regex starting with '/') to auto-ignore future matches",
+            "Optional substring pattern to match the fingerprint, auto-ignoring future matches",
         },
       },
       required: ["case_id"],
@@ -185,7 +188,7 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
         },
         fingerprint_pattern: {
           type: "string",
-          description: "Substring match by default; regex if it starts with '/'",
+          description: "Substring match against the case fingerprint",
         },
         action: {
           type: "string",
@@ -325,10 +328,16 @@ export async function dispatchTool(
     switch (name) {
       case "agentry_status":
         return handleStatus();
-      case "agentry_signup":
-        return await handleSignup(String(a.email ?? ""));
-      case "agentry_recover":
-        return await handleSignup(String(a.email ?? ""), true);
+      case "agentry_login":
+        return await handleLogin({
+          mode:
+            a.mode === "start_only" || a.mode === "poll_once"
+              ? (a.mode as "start_only" | "poll_once")
+              : "full",
+          device_code: a.device_code ? String(a.device_code) : undefined,
+          timeout_seconds:
+            typeof a.timeout_seconds === "number" ? a.timeout_seconds : undefined,
+        });
       case "agentry_rotate_key":
         return await handleRotateKey();
       case "agentry_list_projects":
@@ -408,30 +417,122 @@ function handleStatus(): ToolResult {
   };
 }
 
-async function handleSignup(email: string, recovery = false): Promise<ToolResult> {
-  if (!email) {
+async function handleLogin(input: {
+  mode: "full" | "start_only" | "poll_once";
+  device_code?: string;
+  timeout_seconds?: number;
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+
+  if (input.mode === "start_only") {
+    const start = await api.startDeviceFlow(cfg);
     return {
-      error: {
-        code: "missing_email",
-        message: "email is required",
-        next_action: "Ask the user for their email, then call this tool again.",
-      },
+      mode: "start_only",
+      verification_uri: start.verification_uri,
+      user_code: start.user_code,
+      device_code: start.device_code,
+      interval: start.interval,
+      expires_in: start.expires_in,
+      next_action:
+        `Tell the user: "Open ${start.verification_uri} and enter the code ${start.user_code}." ` +
+        "Once they confirm they've authorized, call agentry_login again with mode='poll_once' and this device_code.",
     };
   }
-  const cfg = loadConfig();
-  const resp = await api.signup(cfg, email);
-  const next = persistKeyResponse(cfg, resp);
+
+  if (input.mode === "poll_once") {
+    if (!input.device_code) {
+      return {
+        error: {
+          code: "missing_device_code",
+          message: "mode='poll_once' requires device_code from the start_only call.",
+          next_action:
+            "Either call agentry_login with mode='start_only' first, or use mode='full' and let the tool handle the loop.",
+        },
+      };
+    }
+    const result = await api.pollDeviceFlow(cfg, input.device_code);
+    if ("api_key" in result) {
+      const next = persistKeyResponse(cfg, result);
+      return {
+        ok: true,
+        user_id: result.user_id,
+        github: result.github,
+        api_key_prefix: result.prefix,
+        persisted_to: "local config",
+        server_url: next.server_url,
+        next_action:
+          "Authenticated. Call `agentry_create_project` with a project name (and local_path of the repo) to mint a DSN.",
+      };
+    }
+    return {
+      ok: false,
+      status: result.status,
+      next_action:
+        result.next_action ??
+        "Wait and call agentry_login again with mode='poll_once' and the same device_code.",
+    };
+  }
+
+  // mode === "full" — do the entire flow inside one tool call.
+  const start = await api.startDeviceFlow(cfg);
+  const intervalMs = Math.max(1, start.interval) * 1000;
+  const deadline = Date.now() + (input.timeout_seconds ?? 180) * 1000;
+
+  // We can't wait for the agent to confirm the user authorized, so the agent's
+  // calling convention here is "tell the user the code, then keep polling
+  // automatically." Surface the verification info up front in the response
+  // metadata via instructions so the calling agent can show it before the
+  // poll completes — the JSON we return at the end includes it as well.
+  let lastStatus: string | null = null;
+  while (Date.now() < deadline) {
+    const result = await api.pollDeviceFlow(cfg, start.device_code);
+    if ("api_key" in result) {
+      const next = persistKeyResponse(cfg, result);
+      return {
+        ok: true,
+        user_id: result.user_id,
+        github: result.github,
+        api_key_prefix: result.prefix,
+        persisted_to: "local config",
+        server_url: next.server_url,
+        verification_uri_used: start.verification_uri,
+        user_code_used: start.user_code,
+        next_action:
+          "Authenticated. Call `agentry_create_project` with a project name (and local_path of the repo) to mint a DSN.",
+      };
+    }
+    lastStatus = result.status;
+    if (result.status === "expired" || result.status === "denied") {
+      return {
+        ok: false,
+        status: result.status,
+        verification_uri: start.verification_uri,
+        user_code: start.user_code,
+        next_action:
+          result.next_action ??
+          (result.status === "expired"
+            ? "Device code expired. Call `agentry_login` again to start a fresh flow."
+            : "User declined. Confirm with them and call `agentry_login` again if they want to proceed."),
+      };
+    }
+    const delay = result.status === "slow_down" ? intervalMs + 5000 : intervalMs;
+    await sleep(delay);
+  }
   return {
-    ok: true,
-    recovery,
-    user_id: resp.user_id,
-    api_key_prefix: resp.prefix,
-    persisted_to: "local config",
-    server_url: next.server_url,
+    ok: false,
+    status: "timeout",
+    last_status: lastStatus,
+    verification_uri: start.verification_uri,
+    user_code: start.user_code,
+    device_code: start.device_code,
     next_action:
-      resp.next_action ??
-      "Key stored locally. Next: call `agentry_create_project` with a project name and the repo's local_path.",
+      `Timed out after ${input.timeout_seconds ?? 180}s. ` +
+      `Confirm the user opened ${start.verification_uri} and entered ${start.user_code}, then call agentry_login again with mode='poll_once' and device_code='${start.device_code}'.`,
   };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 async function handleRotateKey(): Promise<ToolResult> {
@@ -441,8 +542,7 @@ async function handleRotateKey(): Promise<ToolResult> {
       error: {
         code: "no_key",
         message: "No API key to rotate.",
-        next_action:
-          "Call `agentry_signup` with the user's email to mint one. (`agentry_recover` is the same flow if they had one previously.)",
+        next_action: "Call `agentry_login` to authenticate via GitHub first.",
       },
     };
   }
@@ -465,7 +565,7 @@ async function handleListProjects(): Promise<ToolResult> {
       error: {
         code: "no_key",
         message: "No API key on file.",
-        next_action: "Call `agentry_signup` first.",
+        next_action: "Call `agentry_login` first.",
       },
     };
   }
@@ -510,7 +610,7 @@ async function handleCreateProject(input: {
       error: {
         code: "no_key",
         message: "No API key on file.",
-        next_action: "Call `agentry_signup` first.",
+        next_action: "Call `agentry_login` first.",
       },
     };
   }
@@ -582,7 +682,7 @@ async function handleListCases(input: {
       error: {
         code: "no_key",
         message: "No API key on file.",
-        next_action: "Call `agentry_signup` first.",
+        next_action: "Call `agentry_login` first.",
       },
     };
   }

@@ -16,12 +16,13 @@ export function getOnboardingHint(cfg: AgentryConfig): OnboardingHint {
   if (!cfg.api_key) {
     return {
       state: "no_key",
-      next_tool: "agentry_signup",
+      next_tool: "agentry_login",
       next_action:
-        "Ask the user for their email, then call `agentry_signup` with it. " +
-        "v0 has no email verification — the same email can be re-signed up to recover a lost key.",
+        "Call `agentry_login`. It returns a verification URL and a short user_code; " +
+        "ask the user to open the URL in their browser and paste the code. " +
+        "The tool blocks until GitHub authorizes (~30s), then persists the api_key locally.",
       message:
-        "No API key on file. The next step is to call `agentry_signup` with the user's email.",
+        "No API key on file. Call `agentry_login` to authenticate via GitHub (no email or password required).",
     };
   }
   const projectIds = Object.keys(cfg.projects);

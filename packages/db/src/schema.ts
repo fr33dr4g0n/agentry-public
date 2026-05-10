@@ -5,10 +5,16 @@ const now = sql`(unixepoch())`;
 
 export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
-  email: text("email").notNull(),
+  // GitHub identity. github_id is the canonical identifier; email may be missing
+  // if a user hides it on GitHub but we always try to fetch a verified one.
+  githubId: integer("github_id").notNull(),
+  githubUsername: text("github_username").notNull(),
+  email: text("email"),
+  avatarUrl: text("avatar_url"),
   createdAt: integer("created_at").notNull().default(now),
 }, (t) => ({
-  emailIdx: uniqueIndex("users_email_idx").on(t.email),
+  githubIdIdx: uniqueIndex("users_github_id_idx").on(t.githubId),
+  emailIdx: index("users_email_idx").on(t.email),
 }));
 
 export const apiKeys = sqliteTable("api_keys", {

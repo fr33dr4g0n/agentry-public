@@ -1,17 +1,31 @@
-// Non-interactive schema push for Turso. Runs the same CREATE TABLE statements
-// drizzle-kit would, but without an interactive confirmation prompt.
+// Non-interactive schema push for Turso. Drops + recreates everything.
+// v0 — destructive, only safe pre-launch.
 
 import { createClient } from "@libsql/client";
 
+const DROP_STATEMENTS: string[] = [
+  "DROP TABLE IF EXISTS suppression_entries",
+  "DROP TABLE IF EXISTS agent_runs",
+  "DROP TABLE IF EXISTS cases",
+  "DROP TABLE IF EXISTS events",
+  "DROP TABLE IF EXISTS projects",
+  "DROP TABLE IF EXISTS api_keys",
+  "DROP TABLE IF EXISTS users",
+];
+
 const STATEMENTS: string[] = [
-  `CREATE TABLE IF NOT EXISTS users (
+  `CREATE TABLE users (
     id text PRIMARY KEY NOT NULL,
-    email text NOT NULL,
+    github_id integer NOT NULL,
+    github_username text NOT NULL,
+    email text,
+    avatar_url text,
     created_at integer DEFAULT (unixepoch()) NOT NULL
   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS users_email_idx ON users (email)`,
+  `CREATE UNIQUE INDEX users_github_id_idx ON users (github_id)`,
+  `CREATE INDEX users_email_idx ON users (email)`,
 
-  `CREATE TABLE IF NOT EXISTS api_keys (
+  `CREATE TABLE api_keys (
     id text PRIMARY KEY NOT NULL,
     user_id text NOT NULL,
     prefix text NOT NULL,
@@ -22,10 +36,10 @@ const STATEMENTS: string[] = [
     revoked_at integer,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE cascade
   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS api_keys_hash_idx ON api_keys (key_hash)`,
-  `CREATE INDEX IF NOT EXISTS api_keys_user_idx ON api_keys (user_id)`,
+  `CREATE UNIQUE INDEX api_keys_hash_idx ON api_keys (key_hash)`,
+  `CREATE INDEX api_keys_user_idx ON api_keys (user_id)`,
 
-  `CREATE TABLE IF NOT EXISTS projects (
+  `CREATE TABLE projects (
     id text PRIMARY KEY NOT NULL,
     user_id text NOT NULL,
     name text NOT NULL,
@@ -37,10 +51,10 @@ const STATEMENTS: string[] = [
     created_at integer DEFAULT (unixepoch()) NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE cascade
   )`,
-  `CREATE INDEX IF NOT EXISTS projects_user_idx ON projects (user_id)`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS projects_dsn_hash_idx ON projects (dsn_hash)`,
+  `CREATE INDEX projects_user_idx ON projects (user_id)`,
+  `CREATE UNIQUE INDEX projects_dsn_hash_idx ON projects (dsn_hash)`,
 
-  `CREATE TABLE IF NOT EXISTS events (
+  `CREATE TABLE events (
     id text PRIMARY KEY NOT NULL,
     project_id text NOT NULL,
     fingerprint text NOT NULL,
@@ -56,9 +70,9 @@ const STATEMENTS: string[] = [
     received_at integer DEFAULT (unixepoch()) NOT NULL,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
   )`,
-  `CREATE INDEX IF NOT EXISTS events_proj_fp_idx ON events (project_id, fingerprint, received_at)`,
+  `CREATE INDEX events_proj_fp_idx ON events (project_id, fingerprint, received_at)`,
 
-  `CREATE TABLE IF NOT EXISTS cases (
+  `CREATE TABLE cases (
     id text PRIMARY KEY NOT NULL,
     project_id text NOT NULL,
     fingerprint text NOT NULL,
@@ -73,10 +87,10 @@ const STATEMENTS: string[] = [
     pr_url text,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS cases_proj_fp_idx ON cases (project_id, fingerprint)`,
-  `CREATE INDEX IF NOT EXISTS cases_proj_status_idx ON cases (project_id, status, last_seen_at)`,
+  `CREATE UNIQUE INDEX cases_proj_fp_idx ON cases (project_id, fingerprint)`,
+  `CREATE INDEX cases_proj_status_idx ON cases (project_id, status, last_seen_at)`,
 
-  `CREATE TABLE IF NOT EXISTS agent_runs (
+  `CREATE TABLE agent_runs (
     id text PRIMARY KEY NOT NULL,
     case_id text NOT NULL,
     started_at integer DEFAULT (unixepoch()) NOT NULL,
@@ -87,9 +101,9 @@ const STATEMENTS: string[] = [
     action text,
     FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE cascade
   )`,
-  `CREATE INDEX IF NOT EXISTS agent_runs_case_idx ON agent_runs (case_id, started_at)`,
+  `CREATE INDEX agent_runs_case_idx ON agent_runs (case_id, started_at)`,
 
-  `CREATE TABLE IF NOT EXISTS suppression_entries (
+  `CREATE TABLE suppression_entries (
     id text PRIMARY KEY NOT NULL,
     project_id text NOT NULL,
     fingerprint_pattern text NOT NULL,
@@ -99,7 +113,7 @@ const STATEMENTS: string[] = [
     created_at integer DEFAULT (unixepoch()) NOT NULL,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
   )`,
-  `CREATE INDEX IF NOT EXISTS suppression_proj_idx ON suppression_entries (project_id)`,
+  `CREATE INDEX suppression_proj_idx ON suppression_entries (project_id)`,
 ];
 
 async function main() {
@@ -109,14 +123,23 @@ async function main() {
 
   const client = createClient({ url, authToken });
 
-  for (const stmt of STATEMENTS) {
-    process.stdout.write("…");
-    await client.execute(stmt);
+  console.log("dropping...");
+  for (const s of DROP_STATEMENTS) {
+    process.stdout.write("·");
+    await client.execute(s);
   }
   process.stdout.write("\n");
 
-  // Smoke check.
-  const r = await client.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
+  console.log("creating...");
+  for (const s of STATEMENTS) {
+    process.stdout.write("·");
+    await client.execute(s);
+  }
+  process.stdout.write("\n");
+
+  const r = await client.execute(
+    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+  );
   console.log("tables:", r.rows.map((row) => (row as { name: string }).name).join(", "));
 }
 

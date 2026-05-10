@@ -64,50 +64,91 @@ describe("agentry_status", () => {
     expect(result).toMatchObject({
       has_api_key: false,
       project_count: 0,
-      onboarding: { state: "no_key", next_tool: "agentry_signup" },
+      onboarding: { state: "no_key", next_tool: "agentry_login" },
     });
-    // The next_steps array must literally tell the agent what to call.
-    expect(JSON.stringify(result)).toContain("agentry_signup");
+    expect(JSON.stringify(result)).toContain("agentry_login");
   });
 });
 
-describe("agentry_signup", () => {
-  it("persists the api_key to local config", async () => {
+describe("agentry_login", () => {
+  it("start_only returns verification_uri + user_code + device_code without polling", async () => {
     const fetchMock = globalThis.fetch as unknown as FetchMock;
     setFetchResponses(fetchMock, [
       {
         body: {
-          api_key: "agk_test_secret",
-          user_id: "usr_1",
-          prefix: "agk_test_",
-          next_action: "Stored. Now call POST /v1/projects.",
+          device_code: "dev_abc",
+          user_code: "WDJB-MJHT",
+          verification_uri: "https://github.com/login/device",
+          expires_in: 900,
+          interval: 5,
         },
-        assertUrl: (url) => expect(url).toBe("https://test.example.com/v1/auth/signup"),
-        assertInit: (init) => {
-          expect(init.method).toBe("POST");
-          expect(JSON.parse(init.body as string)).toEqual({ email: "a@b.com" });
-          // Signup should not send Authorization
-          const headers = init.headers as Record<string, string>;
-          expect(headers["authorization"]).toBeUndefined();
-        },
+        assertUrl: (url) =>
+          expect(url).toBe("https://test.example.com/v1/auth/device"),
       },
     ]);
 
     const { dispatchTool } = await import("./tools.js");
-    const result = await dispatchTool("agentry_signup", { email: "a@b.com" });
-    expect(result).toMatchObject({
-      ok: true,
-      api_key_prefix: "agk_test_",
-      user_id: "usr_1",
-    });
+    const result = (await dispatchTool("agentry_login", { mode: "start_only" })) as {
+      verification_uri: string;
+      user_code: string;
+      device_code: string;
+    };
+    expect(result.user_code).toBe("WDJB-MJHT");
+    expect(result.verification_uri).toBe("https://github.com/login/device");
+    expect(result.device_code).toBe("dev_abc");
+  });
+
+  it("poll_once returns pending when GitHub still pending", async () => {
+    const fetchMock = globalThis.fetch as unknown as FetchMock;
+    setFetchResponses(fetchMock, [
+      {
+        body: { status: "pending", next_action: "Wait and retry." },
+        assertUrl: (url) =>
+          expect(url).toBe("https://test.example.com/v1/auth/device/poll"),
+        assertInit: (init) =>
+          expect(JSON.parse(init.body as string)).toEqual({ device_code: "dev_abc" }),
+      },
+    ]);
+    const { dispatchTool } = await import("./tools.js");
+    const result = (await dispatchTool("agentry_login", {
+      mode: "poll_once",
+      device_code: "dev_abc",
+    })) as { ok: boolean; status: string };
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("pending");
+  });
+
+  it("poll_once persists api_key on success", async () => {
+    const fetchMock = globalThis.fetch as unknown as FetchMock;
+    setFetchResponses(fetchMock, [
+      {
+        body: {
+          status: "ok",
+          api_key: "agk_test_secret",
+          user_id: "usr_1",
+          prefix: "agk_test_",
+          github: { id: 42, username: "alice", email: "a@b.com", avatar_url: null },
+          next_action: "Now call POST /v1/projects.",
+        },
+      },
+    ]);
+    const { dispatchTool } = await import("./tools.js");
+    const result = (await dispatchTool("agentry_login", {
+      mode: "poll_once",
+      device_code: "dev_abc",
+    })) as { ok: boolean; user_id: string };
+    expect(result.ok).toBe(true);
+    expect(result.user_id).toBe("usr_1");
     const persisted = JSON.parse(fs.readFileSync(tmpConfigPath, "utf8"));
     expect(persisted.api_key).toBe("agk_test_secret");
   });
 
-  it("returns missing_email when email omitted", async () => {
+  it("poll_once without device_code returns an error", async () => {
     const { dispatchTool } = await import("./tools.js");
-    const result = (await dispatchTool("agentry_signup", {})) as { error: { code: string } };
-    expect(result.error.code).toBe("missing_email");
+    const result = (await dispatchTool("agentry_login", { mode: "poll_once" })) as {
+      error: { code: string };
+    };
+    expect(result.error.code).toBe("missing_device_code");
   });
 });
 
@@ -124,7 +165,7 @@ describe("agentry_list_projects", () => {
           p1: {
             id: "p1",
             name: "musicvideogen",
-            dsn: "https://abc@test.example.com/p1",
+            dsn: "agnt_p1.tokenAbc",
             local_path: "/Users/me/code/musicvideogen",
             default_branch: "main",
           },
@@ -193,7 +234,7 @@ describe("agentry_get_case", () => {
           p1: {
             id: "p1",
             name: "musicvideogen",
-            dsn: "https://abc@test.example.com/p1",
+            dsn: "agnt_p1.tokenAbc",
             local_path: "/Users/me/code/musicvideogen",
             default_branch: "main",
           },
@@ -256,7 +297,7 @@ describe("error propagation", () => {
           error: {
             code: "invalid_api_key",
             message: "API key not recognized or revoked.",
-            next_action: "Call POST /v1/auth/signup with the user's email to mint a fresh key.",
+            next_action: "Call agentry_login to authenticate via GitHub and mint a fresh key.",
           },
         },
       },
@@ -267,7 +308,7 @@ describe("error propagation", () => {
       error: { code: string; message: string; next_action: string };
     };
     expect(result.error.code).toBe("invalid_api_key");
-    expect(result.error.next_action).toContain("/v1/auth/signup");
+    expect(result.error.next_action).toContain("agentry_login");
   });
 });
 
@@ -284,7 +325,7 @@ describe("agentry_capture_test_event", () => {
           proj_xyz: {
             id: "proj_xyz",
             name: "musicvideogen",
-            dsn: "https://publickey123@test.example.com/proj_xyz",
+            dsn: "agnt_proj_xyz.publickey123",
             local_path: "/tmp/repo",
             default_branch: "main",
           },
@@ -301,7 +342,7 @@ describe("agentry_capture_test_event", () => {
         },
         assertInit: (init) => {
           const headers = init.headers as Record<string, string>;
-          expect(headers["x-sentry-auth"]).toContain("sentry_key=publickey123");
+          expect(headers["x-sentry-auth"]).toContain("sentry_key=agnt_proj_xyz.publickey123");
           // ingest must NOT send Authorization bearer
           expect(headers["authorization"]).toBeUndefined();
           const body = JSON.parse(init.body as string);
@@ -346,7 +387,7 @@ describe("agentry_capture_test_event", () => {
 });
 
 describe("tool list completeness", () => {
-  it("registers all 13 tools", async () => {
+  it("registers the v0 tool set", async () => {
     const { TOOL_DESCRIPTORS } = await import("./tools.js");
     const names = TOOL_DESCRIPTORS.map((t) => t.name).sort();
     expect(names).toEqual(
@@ -357,12 +398,11 @@ describe("tool list completeness", () => {
         "agentry_install_sdk",
         "agentry_list_cases",
         "agentry_list_projects",
+        "agentry_login",
         "agentry_mark_spurious",
         "agentry_record_suppression",
-        "agentry_recover",
         "agentry_resolve_case",
         "agentry_rotate_key",
-        "agentry_signup",
         "agentry_status",
       ].sort()
     );

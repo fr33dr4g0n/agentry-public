@@ -19,12 +19,35 @@ export interface ApiError extends Error {
   details?: Record<string, unknown>;
 }
 
-export interface SignupResponse {
+export interface LoginResponse {
+  status: "ok";
   api_key: string;
   user_id: string;
   prefix: string;
+  github?: {
+    id: number;
+    username: string;
+    email: string | null;
+    avatar_url: string | null;
+  };
   next_action?: string;
 }
+
+export interface DeviceStartResponse {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  expires_in: number;
+  interval: number;
+  next_action?: string;
+}
+
+export type DevicePollResponse =
+  | LoginResponse
+  | { status: "pending"; next_action?: string }
+  | { status: "slow_down"; next_action?: string }
+  | { status: "expired"; next_action?: string }
+  | { status: "denied"; next_action?: string };
 
 export interface ProjectSummary {
   id: string;
@@ -114,14 +137,29 @@ export async function apiFetch<T>(
 // reading which routes the MCP server depends on.
 
 export const api = {
-  signup(cfg: AgentryConfig, email: string): Promise<SignupResponse> {
-    return apiFetch<SignupResponse>(cfg, "/v1/auth/signup", {
+  startDeviceFlow(cfg: AgentryConfig): Promise<DeviceStartResponse> {
+    return apiFetch<DeviceStartResponse>(cfg, "/v1/auth/device", {
+      method: "POST",
+      body: {},
+      skipAuth: true,
+    });
+  },
+  pollDeviceFlow(cfg: AgentryConfig, deviceCode: string): Promise<DevicePollResponse> {
+    return apiFetch<DevicePollResponse>(cfg, "/v1/auth/device/poll", {
+      method: "POST",
+      body: { device_code: deviceCode },
+      skipAuth: true,
+    });
+  },
+  testLogin(cfg: AgentryConfig, email: string): Promise<LoginResponse> {
+    return apiFetch<LoginResponse>(cfg, "/v1/auth/_test/login", {
+      method: "POST",
       body: { email },
       skipAuth: true,
     });
   },
-  rotateKey(cfg: AgentryConfig): Promise<SignupResponse> {
-    return apiFetch<SignupResponse>(cfg, "/v1/auth/keys/rotate", {
+  rotateKey(cfg: AgentryConfig): Promise<LoginResponse> {
+    return apiFetch<LoginResponse>(cfg, "/v1/auth/keys/rotate", {
       method: "POST",
       body: {},
     });

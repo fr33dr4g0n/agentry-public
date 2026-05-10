@@ -3,15 +3,15 @@ main = "src/index.ts"
 compatibility_date = "2025-05-01"
 compatibility_flags = ["nodejs_compat"]
 
-# NOTE: ALLOW_UNVERIFIED_SIGNUP is intentionally NOT in [vars]. v0 has no email
-# verification, so anyone who hits /v1/auth/signup can mint keys. For local dev use
-# .dev.vars (gitignored). For prod, set explicitly via `wrangler secret put` only after
-# magic-link auth is added (post-v0).
-
 [vars]
 # Hard cap on ingest body size in bytes (256KB). Anything larger gets 413.
 MAX_BODY_BYTES = "262144"
 # Hard cap on suppressions per project — bounds the scan on every ingest.
 MAX_SUPPRESSIONS_PER_PROJECT = "200"
 
-# Secrets set via wrangler secret put: TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
+# Secrets (set via `wrangler secret put`):
+#   TURSO_DATABASE_URL
+#   TURSO_AUTH_TOKEN
+#   GITHUB_CLIENT_ID
+#   GITHUB_CLIENT_SECRET
+# Do NOT set ENABLE_TEST_LOGIN in production — it's a backdoor for local e2e.
