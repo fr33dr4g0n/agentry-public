@@ -10,6 +10,7 @@ import discoveryRoutes from "./routes/discovery.js";
 import deployRoutes from "./routes/deploys.js";
 import trackRoutes from "./routes/track.js";
 import logRoutes from "./routes/log.js";
+import recipeRoutes from "./routes/recipes.js";
 import type { AppBindings, Env } from "./env.js";
 
 export function createApp() {
@@ -145,6 +146,9 @@ export function createApp() {
 
   // Unified "just log anything" endpoint — auto-detects what kind of signal it is.
   app.route("/", logRoutes);
+
+  // Recipes — canonical query templates the agent can run for common asks.
+  app.route("/", recipeRoutes);
 
   return app;
 }

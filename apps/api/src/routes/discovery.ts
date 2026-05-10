@@ -4,6 +4,97 @@ import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
 
+const QUERY_DOCS = `# agentry — agent query reference
+
+agentry has no dashboard. You — the agent reading this — are the visualization layer.
+Below is everything you need to answer questions like "how many users by cohort?" or
+"show me the funnel drop-off" with a single HogQL or SQL query.
+
+## Two query surfaces
+
+1. **Recipes** — pre-baked queries with parameters and render hints. Use these first.
+   - List: GET /v1/recipes (no auth)
+   - Run:  POST /v1/projects/:id/recipes/:recipe_id/run  body: {params: {...}}
+2. **Ad-hoc HogQL** — for anything the recipes don't cover.
+   - POST /v1/projects/:id/analytics/query  body: {query: "<HogQL>"}
+
+## When to render what
+
+Recipes return a \`render_hint\`. Translate it like this:
+- \`type: "table"\` → markdown table
+- \`type: "line"\` / \`"bar"\` → markdown table + ASCII chart, or Mermaid pie/xychart
+- \`type: "funnel"\` → 3-row table (step, count, drop-off %), compute drop-offs from
+  consecutive counts: \`drop_n = 1 - (count_{n+1} / count_n)\`
+- \`type: "scalar"\` → one-sentence summary
+- \`type: "stacked_bar"\` → cohort heatmap if your UI supports it; markdown otherwise
+
+## Analytics schema (PostHog, queried via HogQL)
+
+Each customer has their own PostHog project, isolated from other customers.
+
+### Table: \`events\`
+| column | type | meaning |
+|---|---|---|
+| event | string | The event name (e.g. \`signup_completed\`, \`page_view\`). Required. |
+| distinct_id | string | Stable per-user identifier. Browser SDK persists in localStorage. |
+| timestamp | DateTime | When the event happened. |
+| properties | Map<string, ?> | Arbitrary key/value sent with the event. |
+
+Common properties on browser events (auto-set by @agentry/browser):
+- \`$current_url\`, \`$pathname\`, \`$referrer\`, \`$user_agent\`, \`$language\`
+
+## HogQL primer
+
+HogQL ≈ ClickHouse SQL. The most useful patterns:
+
+\`\`\`sql
+-- Time bucketing
+SELECT toDate(timestamp) AS day, count() FROM events WHERE timestamp > now() - INTERVAL 7 DAY GROUP BY day
+SELECT toMonday(toDate(timestamp)) AS week, count() FROM events GROUP BY week
+
+-- Distinct users
+SELECT count(DISTINCT distinct_id) FROM events WHERE event = 'page_view'
+
+-- Property access
+SELECT properties.\$pathname AS path, count() FROM events GROUP BY path ORDER BY count() DESC
+
+-- Funnels (manual)
+WITH a AS (SELECT distinct_id, min(timestamp) AS t FROM events WHERE event = 'A' GROUP BY distinct_id),
+     b AS (SELECT e.distinct_id FROM events e JOIN a ON a.distinct_id = e.distinct_id WHERE e.event = 'B' AND e.timestamp >= a.t)
+SELECT (SELECT count() FROM a) AS step1, (SELECT count() FROM b) AS step2
+
+-- Cohort retention skeleton
+WITH signups AS (SELECT distinct_id, toMonday(toDate(min(timestamp))) AS cohort FROM events WHERE event = 'signup_completed' GROUP BY distinct_id)
+SELECT cohort, count() FROM signups GROUP BY cohort ORDER BY cohort
+\`\`\`
+
+## Errors / cases / deploys schema (agentry's own DB)
+
+These tables are queryable via the recipes that have \`backend: "cases"\`. To run an
+ad-hoc SQL is not currently exposed — use recipes or the typed endpoints
+(/v1/cases/:id, /v1/projects/:id/deploys, /v1/projects/:id/cases?status=open).
+
+### \`cases\`
+\`id\`, \`fingerprint\`, \`error_type\`, \`message\`, \`status\` (open|investigating|resolved|spurious|ignored),
+\`event_count\`, \`first_seen_at\`, \`last_seen_at\`, \`last_deploy_sha\`, \`agent_summary\`, \`pr_url\`
+
+### \`events\` (the agentry-side one — error events, not analytics)
+\`id\`, \`fingerprint\`, \`error_type\`, \`message\`, \`stack\`, \`deploy_sha\`, \`environment\`, \`received_at\`
+
+### \`deploys\`
+\`id\`, \`sha\`, \`branch\`, \`environment\`, \`message\`, \`url\`, \`actor\`, \`received_at\`
+
+## Tips for the agent
+
+1. Try a recipe first. The 12 canonical recipes cover the questions humans actually ask.
+2. If no recipe fits, use \`agentry_analytics_query\` with hand-rolled HogQL.
+3. ALWAYS validate the rows match the user's question before rendering. If a metric
+   looks suspicious, mention it (e.g. "DAU dropped to 0 on Tuesday — likely a tracking
+   gap, not a real outage").
+4. For visualization in chat: prefer markdown tables for accuracy and ASCII charts for
+   shape. Use Mermaid only when the UI supports it. NEVER fabricate data.
+`;
+
 const LLMS_TXT = `# agentry
 
 Agent-first incident inbox: errors, analytics, deploys — all routed to the user's
@@ -56,6 +147,27 @@ the language's stdlib HTTP client — no agentry SDK to install:
 CORS is enabled on /v1/store/*, /v1/track/*, /v1/deploys/* with Access-Control-Allow-Origin: *
 since they're DSN-authenticated. Other endpoints (auth, projects, cases) reject browser
 origins; agentry's MCP server is the only intended client there.
+
+## Querying / visualization (no dashboard, agent-driven)
+
+agentry has no UI dashboard. The agent IS the dashboard. Two surfaces:
+
+### Recipes — canned queries for the most-asked questions
+- GET /v1/recipes                      list catalog (no auth)
+- GET /v1/recipes/:id                  one recipe with full HogQL/SQL template
+- POST /v1/projects/:project_id/recipes/:recipe_id/run    {params: {...}}  → rows + render_hint
+
+Recipes cover: DAU/cohorts/retention, 3-step funnels with drop-offs, top events,
+event time-series, conversion rates, top open errors, errors-per-hour, errors after
+last deploy, deploy frequency.
+
+### Ad-hoc queries — when no recipe matches
+- POST /v1/projects/:project_id/analytics/query  {query: "<HogQL>"}
+- GET  /v1/docs/query   markdown schema + HogQL primer for the agent to consume
+
+The agent's loop: user asks "show me retention" → agent calls list_recipes → finds
+weekly_retention → calls run_recipe → renders the rows as a markdown table or
+ASCII chart. Anything quirky → agent composes HogQL from the schema doc.
 
 ## API surface
 
@@ -141,6 +253,10 @@ router.get("/v1/install/sdk/node", (c) => {
     next_action:
       "Paste this into your app's entrypoint. Set AGENTRY_DSN to the DSN you got from POST /v1/projects.",
   });
+});
+
+router.get("/v1/docs/query", (c) => {
+  return c.text(QUERY_DOCS, 200, { "content-type": "text/markdown; charset=utf-8" });
 });
 
 router.get("/v1/privacy/disclosure", (c) => {

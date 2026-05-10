@@ -4,6 +4,17 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-10 — No dashboard: recipes + agent-readable query docs
+
+agentry will not ship a dashboard. The user's Claude Code is the visualization layer. Two surfaces exposed for that:
+
+- **Recipes** — `GET /v1/recipes` (catalog, no auth) + `POST /v1/projects/:id/recipes/:recipe_id/run` (api-key auth). 11 canned queries with parameters, expected columns, and `render_hint` telling the agent how to format the result. Backed by either HogQL (for analytics) or local SQL (for cases/deploys/errors).
+- **Query docs** — `GET /v1/docs/query` returns markdown describing the events table, the cases/deploys schema, a HogQL primer, and visualization hints. The agent reads this when the user asks something the recipes don't cover, then composes ad-hoc HogQL via `agentry_analytics_query`.
+
+MCP tools: `agentry_list_recipes`, `agentry_run_recipe`, `agentry_query_docs`.
+
+The reframe: agentry is a signal store + query surface for agents. Visualization is a rendering concern that lives in the user's chat client. We don't compete with PostHog's UI for power users — we augment it with conversational access.
+
 ## 2026-05-10 — Unified /v1/log/ endpoint + multi-language HTTP recipes
 
 agentry is now genuinely language-agnostic. The mental model is "just like console.log — fire JSON at the endpoint, we route it":

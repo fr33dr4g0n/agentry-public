@@ -320,6 +320,9 @@ async function main() {
     const r = await http("POST", "/v1/auth/_test/login", { body: { email: userB } });
     bobKey = r.json.api_key;
   }
+
+  // Make bobKey available to later sections (recipes tenancy check)
+  globalThis.__bobKey = bobKey;
   {
     const r = await http("GET", `/v1/cases/${firstCaseId}`, {
       headers: { authorization: `Bearer ${bobKey}` },
@@ -487,6 +490,63 @@ async function main() {
         ok("recent_deploys surfaces in case detail");
       else bad("recent_deploys missing from case", detail.json);
     }
+  }
+
+  // 7.6 Recipes (the agent's no-dashboard query surface)
+  console.log("\n[recipes]");
+  {
+    const r = await http("GET", "/v1/recipes");
+    expect(r.status, 200, "GET /v1/recipes 200");
+    if (r.json?.count >= 10) ok(`${r.json.count} recipes available`);
+    else bad("expected >=10 recipes", r.json?.count);
+    if (Array.isArray(r.json?.categories) && r.json.categories.includes("funnels"))
+      ok("funnels category present");
+    else bad("funnels category missing", r.json?.categories);
+  }
+  {
+    const r = await http("GET", "/v1/recipes/funnel_3_step");
+    expect(r.status, 200, "GET specific recipe 200");
+    if (r.json?.query?.includes("{{step1}}")) ok("recipe template has placeholders");
+    else bad("recipe missing placeholders", r.json);
+  }
+  {
+    // Cases-backend recipe (no PostHog needed) → should run against agentry's DB
+    const r = await http("POST", `/v1/projects/${projId}/recipes/open_cases_top/run`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+      body: { params: { limit: 5 } },
+    });
+    expect(r.status, 200, "run open_cases_top 200");
+    if (Array.isArray(r.json?.rows)) ok(`open_cases_top returned ${r.json.rows.length} rows`);
+    else bad("rows missing", r.json);
+    if (r.json?.render_hint?.type === "table") ok("render_hint=table");
+    else bad("render_hint missing/wrong", r.json?.render_hint);
+  }
+  {
+    // Analytics recipe — should 503 because PostHog isn't configured locally
+    const r = await http("POST", `/v1/projects/${projId}/recipes/active_users_daily/run`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+      body: { params: { days: 7 } },
+    });
+    if ([500, 502, 503].includes(r.status))
+      ok(`analytics recipe 5xx without PostHog (got ${r.status})`);
+    else bad("expected 5xx for analytics-without-PostHog", r.status);
+  }
+  {
+    // Tenancy: Bob can't run a recipe on Alice's project
+    const r = await http("POST", `/v1/projects/${projId}/recipes/open_cases_top/run`, {
+      headers: { authorization: `Bearer ${bobKey ?? "agk_invalid"}` },
+      body: { params: {} },
+    });
+    expect([401, 403].includes(r.status), true, `cross-tenant recipe -> 4xx (got ${r.status})`);
+  }
+  {
+    const r = await http("GET", "/v1/docs/query");
+    expect(r.status, 200, "GET /v1/docs/query 200");
+    const ct = r.headers.get("content-type") ?? "";
+    if (ct.includes("text/markdown")) ok("docs served as markdown");
+    else bad("docs wrong content-type", ct);
+    if ((r.text ?? "").includes("HogQL")) ok("docs mention HogQL");
+    else bad("docs missing HogQL primer", null);
   }
 
   // 7.65 Unified /v1/log/ endpoint — auto-detects what kind of signal it is

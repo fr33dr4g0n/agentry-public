@@ -329,6 +329,54 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "agentry_list_recipes",
+    description:
+      "List the canonical query recipes that answer common questions ('how many DAU?', " +
+      "'show me the funnel drop-off', 'errors after the last deploy?'). Each recipe has a " +
+      "HogQL/SQL template, parameters with defaults, expected columns, and a render_hint. " +
+      "Use this BEFORE composing ad-hoc HogQL — agentry has no dashboard, so the agent IS the dashboard.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        category: {
+          type: "string",
+          enum: ["users", "retention", "funnels", "events", "errors", "deploys"],
+          description: "Optional category filter.",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_run_recipe",
+    description:
+      "Run a recipe by id. Returns rows + a render_hint the agent uses to format the answer " +
+      "(markdown table / ASCII bar chart / funnel breakdown / scalar). " +
+      "If no recipe fits the user's question, fall back to `agentry_analytics_query` with hand-rolled HogQL.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        recipe_id: { type: "string", description: "Recipe id from agentry_list_recipes." },
+        project_id: { type: "string", description: "Defaults to the local default project." },
+        params: {
+          type: "object",
+          description: "Parameter values keyed by name. Defaults are applied for any omitted.",
+          additionalProperties: true,
+        },
+      },
+      required: ["recipe_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_query_docs",
+    description:
+      "Return markdown documentation of the queryable schema (analytics events table, errors, " +
+      "deploys) plus a HogQL primer plus visualization hints. Read this when the user's question " +
+      "doesn't match any recipe and the agent needs to compose ad-hoc HogQL.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -548,6 +596,18 @@ export async function dispatchTool(
           project_id: a.project_id ? String(a.project_id) : undefined,
           skip: Array.isArray(a.skip) ? (a.skip as unknown[]).map(String) : [],
         });
+      case "agentry_list_recipes":
+        return await handleListRecipes(a.category ? String(a.category) : undefined);
+      case "agentry_run_recipe":
+        return await handleRunRecipe({
+          recipe_id: String(a.recipe_id ?? ""),
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          params: a.params && typeof a.params === "object"
+            ? (a.params as Record<string, unknown>)
+            : {},
+        });
+      case "agentry_query_docs":
+        return await handleQueryDocs();
       default:
         return {
           error: {
@@ -1346,5 +1406,73 @@ async function handleVerifyInstall(input: {
           "The agent now has all three signal streams to investigate from."
         : `Install incomplete. Failed signal types: ${failed.join(", ")}. ` +
           "For each failed type, re-read its corresponding step in agentry_install_guide and fix.",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Recipes / query docs
+// ---------------------------------------------------------------------------
+
+async function handleListRecipes(category?: string): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const resp = await api.listRecipes(cfg, category);
+  return {
+    ...resp,
+    next_action:
+      "Pick a recipe whose `description` or `example_user_question` matches what the user asked. " +
+      "Then call `agentry_run_recipe` with its id and params (defaults are filled in if omitted). " +
+      "If nothing matches, call `agentry_query_docs` to compose ad-hoc HogQL via `agentry_analytics_query`.",
+  };
+}
+
+async function handleRunRecipe(input: {
+  recipe_id: string;
+  project_id?: string;
+  params: Record<string, unknown>;
+}): Promise<ToolResult> {
+  if (!input.recipe_id) {
+    return {
+      error: {
+        code: "missing_recipe_id",
+        message: "recipe_id is required",
+        next_action: "Call `agentry_list_recipes` to see available recipes.",
+      },
+    };
+  }
+  const cfg = loadConfig();
+  if (!cfg.api_key) {
+    return {
+      error: {
+        code: "no_key",
+        message: "No API key on file.",
+        next_action: "Call `agentry_login` first.",
+      },
+    };
+  }
+  const projectId = input.project_id ?? cfg.default_project_id;
+  if (!projectId) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project_id specified and no default project set.",
+        next_action: "Pass project_id, or create a project first.",
+      },
+    };
+  }
+  const resp = await api.runRecipe(cfg, projectId, input.recipe_id, input.params);
+  return {
+    project_id: projectId,
+    ...resp,
+  };
+}
+
+async function handleQueryDocs(): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const md = await api.getQueryDocs(cfg);
+  return {
+    docs_markdown: md,
+    next_action:
+      "Read the schema + HogQL primer. Compose your query, then call `agentry_analytics_query` " +
+      "with project_id and the HogQL string. For errors/deploys, use the relevant recipe or typed endpoints.",
   };
 }

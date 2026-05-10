@@ -312,6 +312,45 @@ export const api = {
       { skipAuth: true },
     );
   },
+  listRecipes(cfg: AgentryConfig, category?: string): Promise<{
+    count: number;
+    categories: string[];
+    recipes: Array<Record<string, unknown>>;
+  }> {
+    const qs = category ? `?category=${encodeURIComponent(category)}` : "";
+    return apiFetch(cfg, `/v1/recipes${qs}`, { skipAuth: true });
+  },
+  getRecipe(cfg: AgentryConfig, id: string): Promise<Record<string, unknown>> {
+    return apiFetch(cfg, `/v1/recipes/${encodeURIComponent(id)}`, { skipAuth: true });
+  },
+  runRecipe(
+    cfg: AgentryConfig,
+    projectId: string,
+    recipeId: string,
+    params: Record<string, unknown>,
+  ): Promise<{
+    recipe_id: string;
+    title: string;
+    backend: "analytics" | "cases";
+    rows: Array<Record<string, unknown>>;
+    columns: string[];
+    render_hint: Record<string, unknown>;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/recipes/${encodeURIComponent(recipeId)}/run`,
+      { method: "POST", body: { params } },
+    );
+  },
+  getQueryDocs(cfg: AgentryConfig): Promise<string> {
+    // Returns markdown text directly.
+    const url = `${cfg.server_url.replace(/\/$/, "")}/v1/docs/query`;
+    return fetch(url).then(async (res) => {
+      if (!res.ok) throw new Error(`docs fetch ${res.status}`);
+      return res.text();
+    });
+  },
 };
 
 export interface InstallGuideStep {

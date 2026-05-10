@@ -1,7 +1,7 @@
 # Agentry — Build Status
 
-**Last updated:** 2026-05-10 (unified /v1/log/ endpoint + multi-language HTTP recipes)
-**Phase:** ✅ v0 working end-to-end with **server + client + ANY-language** signal capture. agentry is just three POST endpoints — works in Python, Ruby, Go, PHP, Java, .NET, Rust, Elixir, curl, anything that can speak HTTP. PostHog gated on env vars; activates the moment you bring the Hetzner box up.
+**Last updated:** 2026-05-10 (no-dashboard query surface — recipes + agent-readable docs)
+**Phase:** ✅ v0 working end-to-end with capture (server + client + any language) + **agent-driven query/visualization** (no dashboard). PostHog gated on env vars; activates the moment you bring the Hetzner box up.
 
 ## Quickstart for the human (you, when you're back)
 
@@ -82,6 +82,22 @@ agentry/
 ├── CLAUDE.md                 Repo instructions for future Claude sessions
 └── docs/decisions.md         Append-only log of design decisions
 ```
+
+## No dashboard — the agent IS the dashboard
+
+The user asks a natural-language question; the agent runs a recipe; the answer appears in chat as a markdown table or ASCII chart.
+
+```
+User: "show me the signup funnel drop-off"
+Agent: agentry_list_recipes(category: "funnels")
+      → finds funnel_3_step
+Agent: agentry_run_recipe("funnel_3_step",
+        params: { step1: "page_view_landing", step2: "signup_started", step3: "signup_completed" })
+      → returns { rows: [{step1_count: 4200, step2_count: 980, step3_count: 410}], render_hint: { type: "funnel", ... } }
+Agent: renders a 3-row markdown table with drop-off % computed from the counts
+```
+
+11 canonical recipes cover the most-asked questions (DAU, cohorts, weekly retention, 3-step funnels, top events, conversion rate, top open errors, errors per hour, errors after last deploy, deploy frequency). For anything quirky, `agentry_query_docs` returns the schema + HogQL primer so the agent can compose ad-hoc queries via `agentry_analytics_query`.
 
 ## The console.log shape
 
