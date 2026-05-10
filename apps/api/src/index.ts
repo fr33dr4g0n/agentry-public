@@ -15,6 +15,7 @@ import nextStepsRoutes from "./routes/next-steps.js";
 import webhookRoutes from "./routes/webhooks.js";
 import healthRoutes from "./routes/health.js";
 import alertRoutes from "./routes/alerts.js";
+import userRoutes from "./routes/users.js";
 import type { AppBindings, Env } from "./env.js";
 
 export function createApp() {
@@ -165,6 +166,9 @@ export function createApp() {
 
   // Alerts (stored definitions; customer's cron POSTs /evaluate).
   app.route("/", alertRoutes);
+
+  // User identification views (per-project + per-case).
+  app.route("/", userRoutes);
 
   return app;
 }

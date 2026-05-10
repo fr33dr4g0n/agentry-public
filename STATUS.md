@@ -1,7 +1,7 @@
 # Agentry — Build Status
 
-**Last updated:** 2026-05-10 (memory loop + project health + quotas + alerts)
-**Phase:** ✅ v0 with capture (server + client + any language) + agent-driven query + post-install menu + signed webhooks + **persistent agent memory** (`agentry_memory.md`) + **project health/quotas** + **threshold alerts** (customer-scheduled). PostHog gated on env vars.
+**Last updated:** 2026-05-10 (user identification — setUser, affected_users, per-user views)
+**Phase:** ✅ v0 with capture + query + memory + alerts + **user identification**. Errors and analytics now correlate by `user_id`/`distinct_id` so the agent can answer "how many users hit this bug? who? what did they do before?" PostHog gated on env vars.
 
 ## Quickstart for the human (you, when you're back)
 

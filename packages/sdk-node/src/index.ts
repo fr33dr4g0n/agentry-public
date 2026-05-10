@@ -1,8 +1,8 @@
-import { AgentryClient, type DeployOptions, type InitOptions, type TrackOptions } from "./client.js";
+import { AgentryClient, type DeployOptions, type InitOptions, type TrackOptions, type UserContext } from "./client.js";
 import type { CaptureContext } from "./payload.js";
 
 export { AgentryClient } from "./client.js";
-export type { InitOptions, DeployOptions, TrackOptions } from "./client.js";
+export type { InitOptions, DeployOptions, TrackOptions, UserContext } from "./client.js";
 export type { CaptureContext } from "./payload.js";
 export type { IngestEventPayload, StackFrame } from "@agentry/shared";
 
@@ -28,6 +28,10 @@ export function log(payload: unknown): Promise<boolean> {
   return client.log(payload);
 }
 
+export function setUser(user: UserContext | null): void { client.setUser(user); }
+export function identify(user: UserContext): void { client.identify(user); }
+export function clearUser(): void { client.clearUser(); }
+
 export function flush(timeoutMs?: number): Promise<boolean> {
   return client.flush(timeoutMs);
 }
@@ -45,6 +49,9 @@ export const agentry = {
   track,
   deploy,
   log,
+  setUser,
+  identify,
+  clearUser,
   flush,
   close,
   captureUncaught,

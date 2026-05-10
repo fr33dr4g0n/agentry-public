@@ -36,7 +36,13 @@ export interface RenderHint {
 
 export interface Recipe {
   id: string;
-  category: "users" | "funnels" | "events" | "errors" | "deploys" | "retention";
+  category:
+    | "users"
+    | "funnels"
+    | "events"
+    | "errors"
+    | "deploys"
+    | "retention";
   title: string;
   description: string;
   backend: RecipeBackend;
@@ -366,6 +372,75 @@ ORDER BY first_seen_at DESC`,
       ],
     },
     example_user_question: "did the last deploy break anything?",
+  },
+
+  // ---------- USER IDENTIFICATION (cases-backend) ----------
+  {
+    id: "top_users_by_errors",
+    category: "users",
+    title: "Top users by error count (last N days)",
+    description: "Which identified users are hitting the most errors? Useful for outreach or user-specific debugging.",
+    backend: "cases",
+    params: [
+      { name: "days", type: "number", description: "Lookback in days", default: 7 },
+      { name: "limit", type: "number", description: "Max users", default: 25 },
+    ],
+    query: `SELECT user_id, max(user_email) AS user_email, count(*) AS error_count,
+       count(DISTINCT fingerprint) AS distinct_fingerprints, max(received_at) AS last_seen_at
+FROM events
+WHERE project_id = :project_id AND user_id IS NOT NULL AND received_at > :since
+GROUP BY user_id ORDER BY error_count DESC LIMIT :limit`,
+    expected_columns: ["user_id", "user_email", "error_count", "distinct_fingerprints", "last_seen_at"],
+    render_hint: {
+      type: "table",
+      title: "Top users by error count",
+      notes: [
+        "High error_count + 1 distinct_fingerprint = one bug is very loud for that user.",
+        "High distinct_fingerprints = wider regression for that user — check their env/account/version.",
+      ],
+    },
+    example_user_question: "which users are hitting the most errors right now?",
+  },
+  {
+    id: "unique_users_24h",
+    category: "users",
+    title: "Unique identified users with errors in last 24h",
+    description: "How many distinct users were affected today?",
+    backend: "cases",
+    params: [],
+    query: `SELECT count(DISTINCT user_id) AS unique_users, count(*) AS total_events
+FROM events
+WHERE project_id = :project_id
+  AND user_id IS NOT NULL
+  AND received_at > unixepoch() - 86400`,
+    expected_columns: ["unique_users", "total_events"],
+    render_hint: {
+      type: "scalar",
+      title: "Affected users (last 24h)",
+      notes: ["Render as: 'X distinct users hit Y errors in the last 24h.'"],
+    },
+    example_user_question: "how many users were affected today?",
+  },
+  {
+    id: "users_affected_by_case",
+    category: "users",
+    title: "Users affected by a specific case",
+    description: "List of distinct user_ids that hit the case's fingerprint, with error_count and last_seen.",
+    backend: "cases",
+    params: [
+      { name: "fingerprint", type: "string", description: "Fingerprint of the case (from agentry_get_case)", default: "", required: true },
+      { name: "limit", type: "number", description: "Max users", default: 50 },
+    ],
+    query: `SELECT user_id, max(user_email) AS user_email, count(*) AS error_count, max(received_at) AS last_seen_at
+FROM events
+WHERE project_id = :project_id AND fingerprint = :fingerprint AND user_id IS NOT NULL
+GROUP BY user_id ORDER BY last_seen_at DESC LIMIT :limit`,
+    expected_columns: ["user_id", "user_email", "error_count", "last_seen_at"],
+    render_hint: {
+      type: "table",
+      title: "Users affected by case",
+    },
+    example_user_question: "who's been hit by this bug?",
   },
 
   // ---------- DEPLOYS ----------

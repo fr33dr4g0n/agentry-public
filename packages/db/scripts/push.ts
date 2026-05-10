@@ -68,6 +68,8 @@ const STATEMENTS: string[] = [
     stack text NOT NULL,
     deploy_sha text,
     environment text,
+    user_id text,
+    user_email text,
     breadcrumbs_json text,
     request_json text,
     tags_json text,
@@ -76,6 +78,7 @@ const STATEMENTS: string[] = [
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
   )`,
   `CREATE INDEX events_proj_fp_idx ON events (project_id, fingerprint, received_at)`,
+  `CREATE INDEX events_proj_user_idx ON events (project_id, user_id, received_at)`,
 
   `CREATE TABLE cases (
     id text PRIMARY KEY NOT NULL,

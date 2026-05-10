@@ -4,6 +4,24 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-10 — User identification
+
+Knowing which user hit which bug (and how many) is the difference between "we have an error" and "we have a customer impact estimate." Added throughout:
+
+**SDK (Node + Browser):** `setUser({ id, email, username, traits })`, `identify(...)` alias, `clearUser()`. Sticky scope — set once, all subsequent `capture()` and `track()` calls auto-include the user. Browser SDK persists `user.id` to localStorage as the `distinct_id` so it survives reloads and lines up with PostHog. Explicit `ctx.user` on a single capture overrides the sticky scope.
+
+**Schema:** added `user_id` and `user_email` columns to `events` with index `(project_id, user_id, received_at)` for fast per-user queries. Same identifier used as PostHog's `distinct_id` when both are wired — that lets the agent join error events with analytics events server-side.
+
+**API ingest:** `ingest.ts` and `log.ts` now extract `user.id` / `user.email` from the standard Sentry-shape `user` object on every event and persist to the events row.
+
+**Surfaced:**
+- `agentry_get_case` returns `affected_users: { count, sample[] }` for the case's fingerprint
+- new endpoint `GET /v1/cases/:case_id/users` — full list of distinct users for the case (top 100)
+- new endpoint `GET /v1/projects/:project_id/users?days=30&limit=50` — top users by error count, including `distinct_fingerprints` (high distinct = wider regression for that user)
+- 3 new cases-backend recipes: `top_users_by_errors`, `unique_users_24h`, `users_affected_by_case`
+
+The reframe: errors without "who" are noise; analytics with "who" is intelligence. The two share a key now (`user_id` ≡ `distinct_id`), so the agent can answer "what did Alice do in the 2 minutes before her checkout failed?" — analytics events + error event by the same identifier, all visible to the agent.
+
 ## 2026-05-10 — Memory + health + quotas + alerts (the "make it actually live in production" pass)
 
 Six new capabilities, ranked by leverage on agent workflows:

@@ -55,6 +55,10 @@ export const events = sqliteTable("events", {
   stack: text("stack").notNull(),               // JSON-encoded StackFrame[]
   deploySha: text("deploy_sha"),
   environment: text("environment"),
+  // User identification (extracted from ingest payload .user.id / .user.email).
+  // Same identifier as PostHog distinct_id when the customer wires both consistently.
+  userId: text("user_id"),
+  userEmail: text("user_email"),
   breadcrumbsJson: text("breadcrumbs_json"),
   requestJson: text("request_json"),
   tagsJson: text("tags_json"),
@@ -62,6 +66,7 @@ export const events = sqliteTable("events", {
   receivedAt: integer("received_at").notNull().default(now),
 }, (t) => ({
   projFpIdx: index("events_proj_fp_idx").on(t.projectId, t.fingerprint, t.receivedAt),
+  projUserIdx: index("events_proj_user_idx").on(t.projectId, t.userId, t.receivedAt),
 }));
 
 export const cases = sqliteTable("cases", {

@@ -68,6 +68,15 @@ export interface TrackOptions {
   properties?: Record<string, unknown>;
 }
 
+export interface UserContext {
+  /** Stable per-user id. Same identifier as PostHog distinct_id when set on both. */
+  id: string;
+  email?: string;
+  username?: string;
+  /** Arbitrary user traits — stored on the event but not indexed. */
+  traits?: Record<string, unknown>;
+}
+
 export class AgentryClient {
   private config: ResolvedConfig | null = null;
   private events: IngestEventPayload[] = [];
@@ -75,6 +84,27 @@ export class AgentryClient {
   private beforeExitHandler: (() => void) | null = null;
   private warnedNotInitialized = false;
   private warnedInvalidDsn = false;
+  /** Sticky user — set once with setUser, attached to all subsequent capture/track calls. */
+  private user: UserContext | null = null;
+
+  /**
+   * Identify the current user. After this, all `capture()` and `track()` calls
+   * automatically include the user (id → distinct_id for analytics, full user
+   * object for errors). Pass `null` to clear.
+   */
+  setUser(user: UserContext | null): void {
+    this.user = user && typeof user.id === "string" && user.id.length > 0 ? user : null;
+  }
+
+  /** Convenience alias matching common SDK ergonomics. */
+  identify(user: UserContext): void {
+    this.setUser(user);
+  }
+
+  /** Forget the current user (e.g. on logout). */
+  clearUser(): void {
+    this.user = null;
+  }
 
   init(opts: InitOptions): void {
     if (!opts || typeof opts.dsn !== "string" || opts.dsn.length === 0) {
@@ -141,7 +171,17 @@ export class AgentryClient {
     if (this.config.deploySha !== undefined) opts.deploySha = this.config.deploySha;
     if (this.config.serverName !== undefined) opts.serverName = this.config.serverName;
 
-    const payload = buildEventPayload(err, ctx, opts);
+    // Merge sticky user into ctx — explicit ctx.user wins.
+    const mergedCtx: CaptureContext = ctx ? { ...ctx } : {};
+    if (this.user && !mergedCtx.user) {
+      const u: Record<string, unknown> = { id: this.user.id };
+      if (this.user.email) u.email = this.user.email;
+      if (this.user.username) u.username = this.user.username;
+      if (this.user.traits) Object.assign(u, this.user.traits);
+      mergedCtx.user = u;
+    }
+
+    const payload = buildEventPayload(err, mergedCtx, opts);
     this.events.push(payload);
     if (this.events.length > MAX_BUFFERED_EVENTS) {
       // Should rarely happen between flushes; cap aggressively to bound memory.
@@ -202,6 +242,7 @@ export class AgentryClient {
     if (!event || typeof event !== "string") return false;
 
     const config = this.config;
+    const distinctId = opts.distinctId ?? this.user?.id;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -213,8 +254,12 @@ export class AgentryClient {
         },
         body: JSON.stringify({
           event,
-          distinct_id: opts.distinctId,
-          properties: opts.properties ?? {},
+          distinct_id: distinctId,
+          properties: {
+            ...(opts.properties ?? {}),
+            ...(this.user?.email ? { $user_email: this.user.email } : {}),
+            ...(this.user?.username ? { $user_username: this.user.username } : {}),
+          },
           timestamp: Math.floor(Date.now() / 1000),
         }),
         signal: controller.signal,

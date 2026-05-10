@@ -175,6 +175,25 @@ caseRouter.get("/:case_id", async (c) => {
   // Surface the last 5 deploys so the agent can attribute regressions.
   const recentDeploys = await recentDeploysFor(c, row.projectId, 5);
 
+  // Affected users summary: distinct user_ids that hit this fingerprint.
+  // Cheap query thanks to events_proj_fp_idx + (project_id, user_id) index.
+  const [affectedRow] = await db.all<{ c: number }>(sql`
+    SELECT count(DISTINCT user_id) AS c FROM events
+    WHERE project_id = ${row.projectId}
+      AND fingerprint = ${row.fingerprint}
+      AND user_id IS NOT NULL
+  `);
+  const sampleUsers = await db.all<{ user_id: string; user_email: string | null; last_seen: number }>(sql`
+    SELECT user_id, max(user_email) AS user_email, max(received_at) AS last_seen
+    FROM events
+    WHERE project_id = ${row.projectId}
+      AND fingerprint = ${row.fingerprint}
+      AND user_id IS NOT NULL
+    GROUP BY user_id
+    ORDER BY last_seen DESC
+    LIMIT 5
+  `);
+
   return c.json({
     id: row.id,
     project_id: row.projectId,
@@ -198,6 +217,14 @@ caseRouter.get("/:case_id", async (c) => {
       reason: s.reason,
     })),
     recent_deploys: recentDeploys,
+    affected_users: {
+      count: Number(affectedRow?.c ?? 0),
+      sample: sampleUsers.map((u) => ({
+        user_id: u.user_id,
+        user_email: u.user_email,
+        last_seen_at: u.last_seen,
+      })),
+    },
     next_actions: [
       "Read recent_events to find the offending code path and the deploy_sha that introduced it.",
       "Cross-reference last_deploy_sha with recent_deploys[] to identify the suspect deploy.",

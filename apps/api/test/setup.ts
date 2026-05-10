@@ -73,6 +73,8 @@ export async function makeTestEnv(opts?: {
         stack text NOT NULL,
         deploy_sha text,
         environment text,
+        user_id text,
+        user_email text,
         breadcrumbs_json text,
         request_json text,
         tags_json text,
@@ -80,6 +82,7 @@ export async function makeTestEnv(opts?: {
         received_at integer NOT NULL DEFAULT (unixepoch())
       )`,
       `CREATE INDEX events_proj_fp_idx ON events (project_id, fingerprint, received_at)`,
+      `CREATE INDEX events_proj_user_idx ON events (project_id, user_id, received_at)`,
       `CREATE TABLE cases (
         id text PRIMARY KEY,
         project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

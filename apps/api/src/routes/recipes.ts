@@ -122,6 +122,44 @@ router.post(
         rows = r as Array<Record<string, unknown>>;
         break;
       }
+      case "top_users_by_errors": {
+        const days = clampInt(params["days"], 1, 90, 7);
+        const sinceTs = Math.floor(Date.now() / 1000) - days * 86400;
+        const r = await db.all<Record<string, unknown>>(sql`
+          SELECT user_id, max(user_email) AS user_email, count(*) AS error_count,
+                 count(DISTINCT fingerprint) AS distinct_fingerprints, max(received_at) AS last_seen_at
+          FROM events
+          WHERE project_id = ${projectId} AND user_id IS NOT NULL AND received_at > ${sinceTs}
+          GROUP BY user_id ORDER BY error_count DESC LIMIT ${limit}
+        `);
+        rows = r as Array<Record<string, unknown>>;
+        break;
+      }
+      case "unique_users_24h": {
+        const r = await db.all<Record<string, unknown>>(sql`
+          SELECT count(DISTINCT user_id) AS unique_users, count(*) AS total_events
+          FROM events
+          WHERE project_id = ${projectId}
+            AND user_id IS NOT NULL
+            AND received_at > unixepoch() - 86400
+        `);
+        rows = r as Array<Record<string, unknown>>;
+        break;
+      }
+      case "users_affected_by_case": {
+        const fingerprint = typeof params["fingerprint"] === "string" ? (params["fingerprint"] as string) : "";
+        if (!fingerprint) {
+          throw errors.invalidPayload({ reason: "param 'fingerprint' is required for users_affected_by_case" });
+        }
+        const r = await db.all<Record<string, unknown>>(sql`
+          SELECT user_id, max(user_email) AS user_email, count(*) AS error_count, max(received_at) AS last_seen_at
+          FROM events
+          WHERE project_id = ${projectId} AND fingerprint = ${fingerprint} AND user_id IS NOT NULL
+          GROUP BY user_id ORDER BY last_seen_at DESC LIMIT ${limit}
+        `);
+        rows = r as Array<Record<string, unknown>>;
+        break;
+      }
       case "errors_by_hour_24h": {
         const r = await db.all<{ hour: number; errors: number }>(sql`
           SELECT (received_at / 3600) * 3600 AS hour, count(*) AS errors
@@ -184,6 +222,12 @@ void cases;
 void deploys;
 void RECIPES;
 void eq;
+
+function clampInt(v: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
 
 function rowsToObjects(
   results: unknown[],

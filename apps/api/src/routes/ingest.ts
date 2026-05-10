@@ -130,6 +130,15 @@ async function handleIngest(c: Context<AppBindings>) {
   const environment =
     typeof ev.environment === "string" ? ev.environment : null;
 
+  // Extract user.id / user.email from the standard Sentry-shape `user` object.
+  const userObj = (ev.user ?? {}) as { id?: unknown; email?: unknown };
+  const userId =
+    typeof userObj.id === "string" || typeof userObj.id === "number"
+      ? String(userObj.id).slice(0, 200)
+      : null;
+  const userEmail =
+    typeof userObj.email === "string" ? userObj.email.slice(0, 320) : null;
+
   // Suppression check. Cap the scan so a user can't slow their own ingest.
   const maxSuppressions = parsePositiveInt(c.env.MAX_SUPPRESSIONS_PER_PROJECT, 200);
   const suppressions = await db
@@ -168,6 +177,8 @@ async function handleIngest(c: Context<AppBindings>) {
     stack: JSON.stringify(frames),
     deploySha,
     environment,
+    userId,
+    userEmail,
     breadcrumbsJson: ev.breadcrumbs ? JSON.stringify(ev.breadcrumbs) : null,
     requestJson: ev.request ? JSON.stringify(ev.request) : null,
     tagsJson: ev.tags ? JSON.stringify(ev.tags) : null,

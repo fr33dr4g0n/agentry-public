@@ -179,6 +179,14 @@ async function handleErrorSignal(
     null;
   const environment = typeof data.environment === "string" ? data.environment : null;
 
+  const userObj = (data.user ?? {}) as { id?: unknown; email?: unknown };
+  const userId =
+    typeof userObj.id === "string" || typeof userObj.id === "number"
+      ? String(userObj.id).slice(0, 200)
+      : null;
+  const userEmail =
+    typeof userObj.email === "string" ? userObj.email.slice(0, 320) : null;
+
   const maxSuppressions = parsePositiveInt(c.env.MAX_SUPPRESSIONS_PER_PROJECT, 200);
   const suppressions = await db
     .select()
@@ -209,6 +217,8 @@ async function handleErrorSignal(
     stack: JSON.stringify(frames),
     deploySha,
     environment,
+    userId,
+    userEmail,
     breadcrumbsJson: data.breadcrumbs ? JSON.stringify(data.breadcrumbs) : null,
     requestJson: data.request ? JSON.stringify(data.request) : null,
     tagsJson: data.tags ? JSON.stringify(data.tags) : null,

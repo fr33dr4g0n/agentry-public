@@ -41,6 +41,13 @@ export interface TrackOptions {
   properties?: Record<string, unknown>;
 }
 
+export interface UserContext {
+  id: string;
+  email?: string;
+  username?: string;
+  traits?: Record<string, unknown>;
+}
+
 const DEFAULT_SERVER_URL = "https://api.agentry.sh";
 const MAX_BUFFERED_EVENTS = 200;
 const DEFAULT_FLUSH_INTERVAL_MS = 5000;
@@ -91,6 +98,35 @@ export class BrowserAgentryClient {
   private boundOnError: ((ev: ErrorEvent) => void) | null = null;
   private boundOnRejection: ((ev: PromiseRejectionEvent) => void) | null = null;
   private boundOnVisibilityChange: (() => void) | null = null;
+  private user: UserContext | null = null;
+
+  /**
+   * Identify the current user. After this, capture() and track() automatically
+   * include the user (id replaces the auto-generated localStorage distinct_id
+   * so server- and client-side analytics stay correlated).
+   */
+  setUser(user: UserContext | null): void {
+    this.user = user && typeof user.id === "string" && user.id.length > 0 ? user : null;
+    if (this.user) {
+      // Persist as the new distinct_id so it survives reloads.
+      try {
+        const ls = (globalThis as unknown as { localStorage?: Storage }).localStorage;
+        if (ls) ls.setItem(STORAGE_KEY, this.user.id);
+      } catch {
+        // private mode / cross-origin iframe — ignore
+      }
+    }
+  }
+  identify(user: UserContext): void { this.setUser(user); }
+  clearUser(): void {
+    this.user = null;
+    try {
+      const ls = (globalThis as unknown as { localStorage?: Storage }).localStorage;
+      if (ls) ls.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }
 
   init(opts: InitOptions): void {
     if (!opts || typeof opts.dsn !== "string" || opts.dsn.length === 0) {
@@ -135,7 +171,16 @@ export class BrowserAgentryClient {
     if (this.config.release !== undefined) opts.release = this.config.release;
     if (this.config.deploySha !== undefined) opts.deploySha = this.config.deploySha;
 
-    const payload = buildEventPayload(err, ctx, opts);
+    const mergedCtx: CaptureContext = ctx ? { ...ctx } : {};
+    if (this.user && !mergedCtx.user) {
+      const u: Record<string, unknown> = { id: this.user.id };
+      if (this.user.email) u.email = this.user.email;
+      if (this.user.username) u.username = this.user.username;
+      if (this.user.traits) Object.assign(u, this.user.traits);
+      mergedCtx.user = u;
+    }
+
+    const payload = buildEventPayload(err, mergedCtx, opts);
     this.events.push(payload);
     if (this.events.length > MAX_BUFFERED_EVENTS) {
       this.events.splice(0, this.events.length - MAX_BUFFERED_EVENTS);
@@ -183,10 +228,14 @@ export class BrowserAgentryClient {
     if (!event || typeof event !== "string") return false;
     const config = this.config;
 
+    const distinctId = opts.distinctId ?? this.user?.id ?? getOrCreateDistinctId();
+    const enriched = this.enrichBrowserProperties(opts.properties ?? {});
+    if (this.user?.email) enriched.$user_email = this.user.email;
+    if (this.user?.username) enriched.$user_username = this.user.username;
     const payload = {
       event,
-      distinct_id: opts.distinctId ?? getOrCreateDistinctId(),
-      properties: this.enrichBrowserProperties(opts.properties ?? {}),
+      distinct_id: distinctId,
+      properties: enriched,
       timestamp: Math.floor(Date.now() / 1000),
     };
 

@@ -337,6 +337,86 @@ async function main() {
     expect([401, 403, 404].includes(r.status), true, `user B listing user A's cases -> 4xx (got ${r.status})`);
   }
 
+  // 7.2 User identification
+  console.log("\n[user identification]");
+  {
+    // Ingest events with user.id/user.email
+    const fp1 = `usertest-${Date.now()}-A`;
+    for (let i = 0; i < 3; i++) {
+      await http("POST", `/v1/store/${projId}/`, {
+        headers: { authorization: `Bearer ${projDsn}` },
+        body: {
+          user: { id: "u_alice", email: "alice@example.com" },
+          exception: { values: [{ type: fp1, value: "user-test",
+            stacktrace: { frames: [{ filename: `src/${fp1}.ts`, function: "fn", lineno: 1 }] } }] },
+        },
+      });
+    }
+    await http("POST", `/v1/store/${projId}/`, {
+      headers: { authorization: `Bearer ${projDsn}` },
+      body: {
+        user: { id: "u_bob", email: "bob@example.com" },
+        exception: { values: [{ type: fp1, value: "user-test",
+          stacktrace: { frames: [{ filename: `src/${fp1}.ts`, function: "fn", lineno: 1 }] } }] },
+      },
+    });
+    ok("ingested 4 events across 2 users");
+
+    // List the case → has affected_users
+    const list = await http("GET", `/v1/projects/${projId}/cases?status=open&q=${encodeURIComponent(fp1)}`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+    });
+    const userCase = list.json?.cases?.[0];
+    if (userCase) {
+      const detail = await http("GET", `/v1/cases/${userCase.id}`, {
+        headers: { authorization: `Bearer ${aliceKey}` },
+      });
+      if (detail.json?.affected_users?.count === 2) ok("affected_users.count=2 in case detail");
+      else bad("affected_users wrong count", detail.json?.affected_users);
+      const sampleIds = (detail.json?.affected_users?.sample ?? []).map((s) => s.user_id).sort();
+      if (sampleIds.includes("u_alice") && sampleIds.includes("u_bob")) ok("sample includes both users");
+      else bad("sample missing users", sampleIds);
+
+      // /v1/cases/:id/users
+      const u = await http("GET", `/v1/cases/${userCase.id}/users`, {
+        headers: { authorization: `Bearer ${aliceKey}` },
+      });
+      expect(u.status, 200, "GET /cases/:id/users 200");
+      if (u.json?.users?.length === 2) ok("/cases/:id/users returns 2");
+      else bad("users endpoint wrong count", u.json);
+    } else bad("case not found for user-test fingerprint", list.json);
+  }
+  {
+    // /v1/projects/:id/users
+    const r = await http("GET", `/v1/projects/${projId}/users?days=7`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+    });
+    expect(r.status, 200, "GET /projects/:id/users 200");
+    if (typeof r.json?.unique_users === "number" && r.json.unique_users >= 2)
+      ok(`unique_users=${r.json.unique_users}`);
+    else bad("unique_users wrong", r.json);
+  }
+  {
+    // top_users_by_errors recipe
+    const r = await http("POST", `/v1/projects/${projId}/recipes/top_users_by_errors/run`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+      body: { params: { days: 7, limit: 10 } },
+    });
+    expect(r.status, 200, "run top_users_by_errors 200");
+    if (Array.isArray(r.json?.rows) && r.json.rows.length >= 2) ok(`top_users_by_errors returned ${r.json.rows.length}`);
+    else bad("top_users_by_errors empty", r.json);
+  }
+  {
+    // unique_users_24h recipe
+    const r = await http("POST", `/v1/projects/${projId}/recipes/unique_users_24h/run`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+      body: {},
+    });
+    expect(r.status, 200, "run unique_users_24h 200");
+    if ((r.json?.rows?.[0]?.unique_users ?? 0) >= 2) ok(`unique_users_24h returned ${r.json.rows[0].unique_users}`);
+    else bad("unique_users_24h count wrong", r.json);
+  }
+
   // 7.25 Project health
   console.log("\n[project health]");
   {
