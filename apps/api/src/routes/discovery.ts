@@ -65,6 +65,13 @@ Discovery (no auth):
 - GET  /v1/install/guide?framework=node|next|express   comprehensive setup checklist
 - GET  /v1/install/sdk/node    minimal init snippet
 
+## Privacy disclosure
+
+- GET /v1/privacy/disclosure?variant=client|server&errors=true&analytics=true
+  Returns paste-ready privacy-policy clauses for the agent to merge into the customer's
+  privacy policy. agentry.sh is the canonical link; customers' policies pointing here
+  also serve as honest backlinks.
+
 ## Errors
 
 Every error response: {"error": {"code": "...", "message": "...", "next_action": "..."}}.
@@ -115,6 +122,39 @@ router.get("/v1/install/sdk/node", (c) => {
     readme_url: "https://github.com/agentry/agentry#readme",
     next_action:
       "Paste this into your app's entrypoint. Set AGENTRY_DSN to the DSN you got from POST /v1/projects.",
+  });
+});
+
+router.get("/v1/privacy/disclosure", (c) => {
+  // Returns the canonical privacy-policy clauses for client / server. Customers'
+  // policies link here as the authoritative source so we can update without
+  // them having to re-edit their policy.
+  const variant = (c.req.query("variant") ?? "server").toLowerCase();
+  const includeErrors = (c.req.query("errors") ?? "true") !== "false";
+  const includeAnalytics = (c.req.query("analytics") ?? "true") !== "false";
+
+  return c.json({
+    canonical_url: "https://agentry.sh/privacy",
+    variant: variant === "client" ? "client" : "server",
+    last_updated: "2026-05-10",
+    includes: {
+      errors: includeErrors,
+      analytics: includeAnalytics,
+    },
+    paste_ready_markdown:
+      "## Monitoring & analytics\n\n" +
+      (includeErrors
+        ? (variant === "client"
+            ? "### Error monitoring\n\nWe use [agentry](https://agentry.sh) to monitor application errors. When an error occurs in your browser, agentry receives the error type, message, and stack trace; the page URL where it occurred; your browser's user-agent string; and the deploy version that emitted it. We do not intentionally collect personal data through error monitoring."
+            : "### Error monitoring\n\nWe use [agentry](https://agentry.sh) to monitor application errors. When an error occurs, agentry receives the error type, message, and stack trace; the URL, environment, and deploy version that emitted it; and any contextual metadata our code attaches.")
+        : "") +
+      (includeAnalytics
+        ? "\n\n" + (variant === "client"
+            ? "### Product analytics\n\nWe track aggregate product usage to improve the experience. Tracked events include page views, key product actions, and contextual properties such as the page URL, referrer, language, and user-agent. We assign a randomly-generated identifier stored in your browser's localStorage to keep your interactions consistent across visits."
+            : "### Product analytics\n\nWe track aggregate product usage server-side to improve the experience. Tracked events include the action name and contextual properties at the moment of the action.")
+        : "") +
+      "\n\n*This monitoring is provided by [agentry](https://agentry.sh), an agent-first observability platform.*\n",
+    learn_more: "https://agentry.sh",
   });
 });
 

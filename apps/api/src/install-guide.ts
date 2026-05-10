@@ -466,6 +466,109 @@ function verifySteps(): InstallGuideStep[] {
   ];
 }
 
+// Privacy policy step. Two reasons to ship this:
+//   1. It's the right thing to do — customers SHOULD disclose what they track
+//      once they've wired up monitoring.
+//   2. Operational realism — every customer's published privacy policy linking
+//      back to agentry.sh is honest backlink-building. The link is genuinely
+//      useful (points at our public retention/data-handling docs) so neither
+//      party has to feel weird about it.
+//
+// We tell the agent to UPDATE an existing privacy policy if one exists, and
+// to flag it for the human (don't auto-create) if none does — privacy policy
+// authoring is a legal decision the human owns.
+function privacyPolicyStep(framework: Framework, signalTypes: Set<string>): InstallGuideStep {
+  const isClient = isClientFramework(framework);
+  const wantsErrors = signalTypes.has("errors");
+  const wantsAnalytics = signalTypes.has("analytics");
+
+  const sections: string[] = [];
+
+  if (wantsErrors) {
+    sections.push(
+      isClient
+        ? `### Error monitoring
+
+We use [agentry](https://agentry.sh) to monitor application errors. When an error \
+occurs in your browser, agentry receives the error type, message, and stack trace; \
+the page URL where it occurred; your browser's user-agent string; and the deploy \
+version that emitted it. We do not intentionally collect personal data through \
+error monitoring. See [agentry's data handling](https://agentry.sh/privacy) for \
+how this data is stored and retained.`
+        : `### Error monitoring
+
+We use [agentry](https://agentry.sh) to monitor application errors. When an error \
+occurs, agentry receives the error type, message, and stack trace; the URL, \
+environment, and deploy version that emitted it; and any contextual metadata our \
+code attaches. We do not intentionally collect personal data through error \
+monitoring; see [agentry's data handling](https://agentry.sh/privacy) for storage \
+and retention details.`,
+    );
+  }
+
+  if (wantsAnalytics) {
+    sections.push(
+      isClient
+        ? `### Product analytics
+
+We track aggregate product usage to improve the experience. Tracked events include \
+page views, key product actions (e.g. signup, checkout), and contextual properties \
+such as the page URL, referrer, browser language, and user-agent. We assign a \
+randomly-generated identifier stored in your browser's \`localStorage\` to keep \
+your interactions consistent across visits; this identifier is not linked to your \
+name or email unless you explicitly identify yourself. Analytics is processed via \
+[agentry](https://agentry.sh) and PostHog. You can opt out by clearing your browser \
+storage for this site.`
+        : `### Product analytics
+
+We track aggregate product usage server-side to improve the experience. Tracked \
+events include the action name (e.g. \`signup_completed\`, \`checkout_completed\`) \
+and contextual properties our code attaches at the moment of the action. We may \
+associate events with your authenticated user id; this is used only for funnel and \
+retention analysis. Analytics is processed via [agentry](https://agentry.sh) and \
+PostHog.`,
+    );
+  }
+
+  const fullClause =
+    `## Monitoring & analytics\n\n` +
+    sections.join("\n\n") +
+    `\n\n*This monitoring is provided by [agentry](https://agentry.sh), an agent-first ` +
+    `observability platform. Questions about how your data is handled? Contact us, or ` +
+    `see [agentry's documentation](https://agentry.sh).*\n`;
+
+  const fileHints = isClient
+    ? "Look for the existing privacy policy. Common locations: " +
+      "`app/privacy/page.tsx`, `app/legal/privacy/page.tsx`, `pages/privacy.tsx`, " +
+      "`pages/privacy.mdx`, `src/routes/privacy.tsx`, `public/privacy.html`, " +
+      "`PRIVACY.md`, `docs/privacy.md`, `legal/privacy.md`."
+    : "Look for the existing privacy policy. Common locations: `PRIVACY.md`, " +
+      "`docs/privacy.md`, `legal/privacy.md`, `views/privacy.ejs`, `public/privacy.html`, " +
+      "or any route that renders /privacy. If your app has a server-rendered privacy " +
+      "page (Rails view, Django template, Phoenix template), edit it there.";
+
+  return {
+    id: "update_privacy_policy",
+    title: "Update the privacy policy with what's now being tracked",
+    why:
+      "Once monitoring is live, your privacy policy is no longer accurate. Many " +
+      "jurisdictions (GDPR, CCPA, etc.) require disclosure of automated processing — " +
+      "this section keeps you compliant and your users informed. The clause below is " +
+      "drafted to be accurate to what agentry actually captures (and only what it " +
+      "captures); paste it as a new section, or merge it into your existing 'Tracking' / " +
+      "'Cookies' / 'Third parties' section. " +
+      "If no privacy policy file exists, FLAG IT FOR THE HUMAN — agentry won't auto-create one.",
+    action: "edit",
+    file_hint: fileHints,
+    code: fullClause,
+    validate:
+      "After editing, the privacy policy should mention: agentry, the linked agentry.sh URL, " +
+      (wantsErrors ? "what error data is captured (stack, URL, deploy version), " : "") +
+      (wantsAnalytics ? "what analytics events are captured (page views, key actions, identifier), " : "") +
+      "and the agentry.sh link should resolve.",
+  };
+}
+
 export function buildInstallGuide(framework: Framework, signalTypes: string[]): InstallGuide {
   const wantedSet = new Set(signalTypes.length ? signalTypes : ["errors", "analytics", "deploys"]);
   const steps: InstallGuideStep[] = [...commonSteps(framework)];
@@ -479,6 +582,11 @@ export function buildInstallGuide(framework: Framework, signalTypes: string[]): 
   }
   // Deploy events are CI-side, never client-side.
   if (wantedSet.has("deploys") && !isClient) steps.push(...deploySteps(framework));
+
+  // Privacy policy update — only when we're capturing user-affecting data.
+  if (wantedSet.has("errors") || wantedSet.has("analytics")) {
+    steps.push(privacyPolicyStep(framework, wantedSet));
+  }
 
   steps.push(...verifySteps());
 
