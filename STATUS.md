@@ -1,7 +1,7 @@
 # Agentry — Build Status
 
-**Last updated:** 2026-05-10 (GitHub OAuth landed)
-**Phase:** ✅ v0 working end-to-end with GitHub device-flow auth. Awaiting your sanity check.
+**Last updated:** 2026-05-10 (signal-types expansion — analytics, deploys, install guide)
+**Phase:** ✅ v0 working end-to-end with errors + analytics + deploys + comprehensive install. PostHog gated on env vars; activates the moment you bring the box up.
 
 ## Quickstart for the human (you, when you're back)
 
@@ -58,11 +58,12 @@ AGENTRY_SERVER_URL=https://agentry-api.<your-subdomain>.workers.dev claude mcp a
 
 ## What got built
 
-- **Cloudflare Workers API** (Hono + Drizzle + Turso): auth, projects, cases, ingest (Sentry-protocol-compatible), suppressions, discovery (`llms.txt`)
-- **Turso schema** pushed and live (7 tables)
-- **Node SDK** `@agentry/node` — three-line install, handles Error / non-Error / null / string / huge stacks / async stacks
-- **MCP server** `@agentry/mcp` — 13 tools, conversational onboarding, persists config to `~/.agentry/config.json`
-- **Tests**: 92 unit + integration tests, all green. 58 live e2e tests against `wrangler dev` + real Turso, all green. Dogfood test (SDK → ingest → case visible) passes.
+- **Cloudflare Workers API** (Hono + Drizzle + Turso): GitHub-OAuth-device-flow auth, projects, cases, errors ingest (Sentry-protocol), **deploys ingest**, **analytics ingest (PostHog passthrough)**, suppressions, **comprehensive install guide endpoint**, discovery (`llms.txt`).
+- **Turso schema** — 9 tables (added `deploys`, `posthog_projects`).
+- **Node SDK** `@agentry/node` — `init()`, `capture()`, **`track()`**, **`deploy()`**, `flush()`, `close()`. Handles Error / non-Error / null / string / huge stacks / async stacks.
+- **MCP server** `@agentry/mcp` — **18 tools**, including `agentry_install_guide` (framework-aware checklist) and `agentry_verify_install` (canary check that fires synthetic error + analytics + deploy events and reports which signals reached agentry).
+- **PostHog multi-tenant integration** — auto-provisions one PostHog project per agentry user (gated on POSTHOG_HOST + POSTHOG_ORG_ID + POSTHOG_MASTER_API_KEY + AGENTRY_TOKEN_ENC_KEY env vars; activates without code changes once you set them).
+- **Tests**: 100 unit + integration tests, all green. 77 live e2e tests against `wrangler dev` + real Turso, all green. Dogfood test (errors + deploys round-trip) passes.
 
 ```
 agentry/
@@ -83,20 +84,46 @@ agentry/
 
 ## What works (verified end-to-end)
 
-- New user signs up via MCP → API key minted → persisted locally
-- Same email re-signup mints fresh key (the v0 recovery path)
+- New user logs in via MCP → GitHub device flow → API key minted → persisted locally
 - API key rotation (`agentry_rotate_key`)
 - Project creation returns DSN + ready-to-paste install snippet
+- **Comprehensive install guide** (`agentry_install_guide`) returns framework-aware steps with code snippets, file hints, and validation criteria for Node / Express / Next.js
+- **Install verification** (`agentry_verify_install`) fires synthetic error + analytics + deploy events and reports which signals reached agentry — and persists `install_verified=true` on success so onboarding state moves to `ready`
 - SDK captures Error / TypeError / SyntaxError / non-Error throws / strings / null
+- SDK `track()` forwards analytics events through agentry to user's PostHog project (DSN auth, no exposed PostHog keys)
+- SDK `deploy()` records deploy events that get surfaced in case detail's `recent_deploys`
 - Ingest handles Sentry-shape, X-Sentry-Auth header, ?sentry_key= query
 - Same fingerprint dedupes into one case (event_count increments)
-- Different fingerprint = different case
-- Tenancy: user A cannot read user B's cases (403)
-- Suppressions: pattern → auto_ignore returns 202 on subsequent matches
+- Tenancy: user A cannot read user B's cases / deploys / analytics (403)
+- Case detail surfaces last 5 deploys for regression attribution
+- Suppressions: substring pattern → auto_ignore returns 202 on subsequent matches
 - Malformed JSON → 400 with `next_action` hint, never 500
 - Huge stack (500 frames) → 200, no crash
 - Unknown forward-compat fields → 200
 - Body over 256 KB → 413 with structured error
+- Analytics endpoints 503 with `analytics_not_configured` until PostHog env vars are set
+
+## When you bring up the PostHog box
+
+The agentry side is fully wired but inert until these four env vars exist:
+
+```bash
+cd apps/api
+npx wrangler secret put POSTHOG_HOST                # e.g. https://posthog.agentry.sh
+npx wrangler secret put POSTHOG_ORG_ID              # the org id from PostHog admin
+npx wrangler secret put POSTHOG_MASTER_API_KEY      # personal API key with org-admin scope
+npx wrangler secret put AGENTRY_TOKEN_ENC_KEY       # 32-byte base64url AES-256 key
+```
+
+Generate AGENTRY_TOKEN_ENC_KEY:
+
+```bash
+node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64url') + '\n')"
+```
+
+Without these set, `/v1/track/...` returns 503 `analytics_not_configured` and `agentry_login` returns `posthog: { provisioned: false }` — but everything else (errors, deploys, install guide, verify) works. So it's safe to ship error monitoring first and toggle analytics on later.
+
+For local dev, set the same four vars in `apps/api/.dev.vars` (gitignored).
 
 ## How the MCP onboarding actually feels
 
@@ -119,8 +146,34 @@ next_action: "Ask the user for a project name, then call agentry_create_project"
 >>> agentry_create_project   (my-app)
 returns: { dsn, install_snippet (paste-ready), local_path }
 
->>> agentry_capture_test_event
-returns: { case_id }, "Call agentry_get_case to see how it looks"
+>>> agentry_status   (after create_project)
+state: needs_install
+next_action: "Call agentry_install_guide for the comprehensive checklist, walk through it, then call agentry_verify_install — that's how we know errors, analytics, and deploys are actually flowing."
+
+>>> agentry_install_guide   (framework: detected automatically by reading package.json)
+returns:
+  steps: [
+    install_sdk         → npm install @agentry/node
+    set_env_vars        → AGENTRY_DSN, GIT_SHA
+    init_at_entrypoint  → with framework-specific snippet
+    track_signup        → server-side capture pattern
+    track_key_actions   → 2-3 events for funnel
+    fire_deploy_from_ci → GitHub Actions snippet
+    verify_install      → call agentry_verify_install
+  ]
+  pitfalls: [...]
+  signal_health_principles: [...]
+
+... agent reads guide, edits customer code, commits, ...
+
+>>> agentry_verify_install
+returns: { ok: true, summary: "3/3 signal types verified",
+           passed: ["errors","analytics","deploys"],
+           checks: { errors: ✓, analytics: ✓, deploys: ✓ } }
+
+>>> agentry_status   (after verify)
+state: ready
+next_action: "Onboarding done. Call agentry_list_cases or agentry_analytics_query."
 ```
 
 If the agent prefers to control the polling loop itself (e.g. show the code to the user and confirm before polling), call `agentry_login` with `mode: "start_only"` first, then `mode: "poll_once"` with the returned `device_code`.

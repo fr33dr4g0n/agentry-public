@@ -20,6 +20,7 @@ import {
   requireProjectAccess,
 } from "../middleware.js";
 import type { AppBindings } from "../env.js";
+import { recentDeploysFor } from "./deploys.js";
 
 // Cases that hang off /v1/projects/:project_id
 // IMPORTANT: this sub-app is mounted at /v1, so the middleware path here is
@@ -124,6 +125,9 @@ caseRouter.get("/:case_id", async (c) => {
     matchesPattern(s.fingerprintPattern, row.fingerprint),
   );
 
+  // Surface the last 5 deploys so the agent can attribute regressions.
+  const recentDeploys = await recentDeploysFor(c, row.projectId, 5);
+
   return c.json({
     id: row.id,
     project_id: row.projectId,
@@ -153,8 +157,10 @@ caseRouter.get("/:case_id", async (c) => {
       hint_text: s.hintText,
       reason: s.reason,
     })),
+    recent_deploys: recentDeploys,
     next_actions: [
       "Read recent_events to find the offending code path and the deploy_sha that introduced it.",
+      "Cross-reference last_deploy_sha with recent_deploys[] to identify the suspect deploy.",
       "git log + git blame from local_path to find when this regressed.",
       "Open a PR fixing it; if uncertain, call PATCH /v1/cases/:id with status=spurious or resolved and a summary.",
       "If this looks like recurring noise, POST /v1/projects/:project_id/suppressions to silence future occurrences.",

@@ -117,6 +117,28 @@ export async function makeTestEnv(opts?: {
         created_at integer NOT NULL DEFAULT (unixepoch())
       )`,
       `CREATE INDEX suppression_proj_idx ON suppression_entries (project_id)`,
+      `CREATE TABLE deploys (
+        id text PRIMARY KEY,
+        project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        sha text NOT NULL,
+        branch text,
+        environment text,
+        message text,
+        url text,
+        actor text,
+        received_at integer NOT NULL DEFAULT (unixepoch())
+      )`,
+      `CREATE INDEX deploys_proj_time_idx ON deploys (project_id, received_at)`,
+      `CREATE TABLE posthog_projects (
+        user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        posthog_project_id integer NOT NULL,
+        posthog_project_api_key text NOT NULL,
+        read_token_enc text NOT NULL,
+        read_token_iv text NOT NULL,
+        posthog_host text NOT NULL,
+        created_at integer NOT NULL DEFAULT (unixepoch())
+      )`,
+      `CREATE UNIQUE INDEX posthog_projects_ph_id_idx ON posthog_projects (posthog_project_id)`,
     ],
     "write",
   );

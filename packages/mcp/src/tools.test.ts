@@ -392,18 +392,24 @@ describe("tool list completeness", () => {
     const names = TOOL_DESCRIPTORS.map((t) => t.name).sort();
     expect(names).toEqual(
       [
+        "agentry_analytics_query",
         "agentry_capture_test_event",
         "agentry_create_project",
         "agentry_get_case",
+        "agentry_install_guide",
         "agentry_install_sdk",
         "agentry_list_cases",
+        "agentry_list_deploys",
         "agentry_list_projects",
         "agentry_login",
         "agentry_mark_spurious",
+        "agentry_record_deploy",
         "agentry_record_suppression",
         "agentry_resolve_case",
         "agentry_rotate_key",
         "agentry_status",
+        "agentry_track_test_event",
+        "agentry_verify_install",
       ].sort()
     );
   });

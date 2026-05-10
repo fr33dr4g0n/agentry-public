@@ -24,10 +24,29 @@ const DEFAULT_FLUSH_INTERVAL_MS = 5000;
 interface ResolvedConfig {
   dsn: string;
   ingestUrl: string;
+  trackUrl: string;
+  deployUrl: string;
+  serverUrl: string;
+  projectId: string;
   environment?: string;
   release?: string;
   deploySha?: string;
   serverName?: string;
+}
+
+export interface DeployOptions {
+  sha: string;
+  branch?: string;
+  environment?: string;
+  message?: string;
+  url?: string;
+  actor?: string;
+}
+
+export interface TrackOptions {
+  /** Identify the actor for the event. PostHog calls this `distinct_id`. */
+  distinctId?: string;
+  properties?: Record<string, unknown>;
 }
 
 export class AgentryClient {
@@ -59,10 +78,16 @@ export class AgentryClient {
 
     const serverUrl = (opts.serverUrl ?? DEFAULT_SERVER_URL).replace(/\/+$/, "");
     const ingestUrl = `${serverUrl}/v1/store/${parsed.projectId}/`;
+    const trackUrl = `${serverUrl}/v1/track/${parsed.projectId}/`;
+    const deployUrl = `${serverUrl}/v1/deploys/${parsed.projectId}/`;
 
     const config: ResolvedConfig = {
       dsn: opts.dsn,
       ingestUrl,
+      trackUrl,
+      deployUrl,
+      serverUrl,
+      projectId: parsed.projectId,
     };
     if (opts.environment !== undefined) config.environment = opts.environment;
     if (opts.release !== undefined) config.release = opts.release;
@@ -107,6 +132,92 @@ export class AgentryClient {
   captureUncaught = (err: unknown): void => {
     this.capture(err, { tags: { uncaught: "true" } });
   };
+
+  /**
+   * Track an analytics event. Fire-and-forget; resolves once the request returns.
+   * Returns false if the SDK is not initialized or the request failed (4xx/5xx/timeout).
+   */
+  async track(event: string, opts: TrackOptions = {}, timeoutMs = 5000): Promise<boolean> {
+    if (!this.config) {
+      this.warnNotInitialized();
+      return false;
+    }
+    if (!event || typeof event !== "string") return false;
+
+    const config = this.config;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await globalThis.fetch(config.trackUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${config.dsn}`,
+        },
+        body: JSON.stringify({
+          event,
+          distinct_id: opts.distinctId,
+          properties: opts.properties ?? {},
+          timestamp: Math.floor(Date.now() / 1000),
+        }),
+        signal: controller.signal,
+      });
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Record a deploy event. Call this from your CI after a successful deploy
+   * (e.g. in the same step that publishes the build). Cases ingested after a
+   * deploy will surface that deploy in their `recent_deploys` to help agents
+   * attribute regressions.
+   */
+  async deploy(opts: DeployOptions, timeoutMs = 5000): Promise<boolean> {
+    if (!this.config) {
+      this.warnNotInitialized();
+      return false;
+    }
+    if (!opts.sha) return false;
+
+    const config = this.config;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await globalThis.fetch(config.deployUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${config.dsn}`,
+        },
+        body: JSON.stringify({
+          sha: opts.sha,
+          branch: opts.branch,
+          environment: opts.environment,
+          message: opts.message,
+          url: opts.url,
+          actor: opts.actor,
+        }),
+        signal: controller.signal,
+      });
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private warnNotInitialized(): void {
+    if (!this.warnedNotInitialized) {
+      // eslint-disable-next-line no-console
+      console.warn("[agentry] called before init() — no-op");
+      this.warnedNotInitialized = true;
+    }
+  }
 
   /**
    * Send all queued events. Returns true if everything was delivered (or

@@ -220,6 +220,115 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "agentry_record_deploy",
+    description:
+      "Record a deploy event. Useful when CI doesn't call the SDK directly. Cases ingested after this " +
+      "will surface the deploy in their `recent_deploys` so the agent can attribute regressions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        sha: { type: "string", description: "Git SHA of the deployed commit" },
+        branch: { type: "string" },
+        environment: { type: "string", description: "e.g. 'production', 'staging'" },
+        message: { type: "string", description: "Commit / deploy message" },
+        url: { type: "string", description: "Deploy or commit URL" },
+        actor: { type: "string", description: "Person or service that triggered the deploy" },
+      },
+      required: ["sha"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_list_deploys",
+    description:
+      "List recent deploys for a project. Useful for cross-referencing case timestamps with deploy timestamps.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        limit: { type: "number", description: "Defaults to 20" },
+        since: { type: "number", description: "Unix seconds — only return deploys after this" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_track_test_event",
+    description:
+      "Fire a synthetic analytics event through the agentry track endpoint to verify the PostHog forwarding " +
+      "is wired up. Returns whether the forwarding succeeded.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        event: {
+          type: "string",
+          description: "Event name. Defaults to 'agentry_verify'.",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_analytics_query",
+    description:
+      "Run a HogQL query against the user's PostHog project. The agent uses this to investigate funnels, " +
+      "retention, paths, anomalies — anything PostHog can express in HogQL. " +
+      "Examples: SELECT count() FROM events WHERE event = 'signup_completed' AND timestamp > now() - INTERVAL 7 DAY",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        query: { type: "string", description: "HogQL query string" },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_install_guide",
+    description:
+      "Get the comprehensive, framework-aware install checklist. Returns ordered steps with file hints, " +
+      "code snippets, and validation criteria. The agent should read this BEFORE editing any customer code.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        framework: {
+          type: "string",
+          enum: ["node", "next", "express"],
+          description: "Detected from package.json. Defaults to 'node'.",
+        },
+        signal_types: {
+          type: "array",
+          items: { type: "string", enum: ["errors", "analytics", "deploys"] },
+          description: "Subset of signals to include. Defaults to all three.",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_verify_install",
+    description:
+      "Comprehensive sanity check: fires a synthetic error, a synthetic analytics event, and (if requested) " +
+      "a synthetic deploy event, then reports which signal types reached agentry. Run this AFTER walking " +
+      "through agentry_install_guide. Errors that don't error and analytics that don't fire aren't useful — " +
+      "this is the only proof the install actually works.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        skip: {
+          type: "array",
+          items: { type: "string", enum: ["errors", "analytics", "deploys"] },
+          description: "Signal types to skip (e.g. if the customer hasn't wired analytics yet)",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -275,6 +384,27 @@ function persistKeyResponse(
   };
   saveConfig(next);
   return next;
+}
+
+function requireProjectFromConfig(
+  cfg: AgentryConfig,
+  projectId: string | undefined,
+): { id: string; project: AgentryProjectConfig } | { error: ToolResult } {
+  const picked = pickProject(cfg, projectId);
+  if (!picked || !picked.project) {
+    return {
+      error: {
+        error: {
+          code: "no_project",
+          message:
+            "No project found locally. Either create one with agentry_create_project or pass project_id explicitly " +
+            "(noting: this MCP only knows about projects it created locally — DSNs aren't fetched from the API).",
+          next_action: "Call agentry_create_project first.",
+        },
+      },
+    };
+  }
+  return { id: picked.id, project: picked.project };
 }
 
 // Build a Sentry-shaped synthetic event suitable for hitting /v1/store/:id/.
@@ -380,6 +510,44 @@ export async function dispatchTool(
         });
       case "agentry_capture_test_event":
         return await handleCaptureTestEvent(a.project_id ? String(a.project_id) : undefined);
+      case "agentry_record_deploy":
+        return await handleRecordDeploy({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          sha: String(a.sha ?? ""),
+          branch: a.branch ? String(a.branch) : undefined,
+          environment: a.environment ? String(a.environment) : undefined,
+          message: a.message ? String(a.message) : undefined,
+          url: a.url ? String(a.url) : undefined,
+          actor: a.actor ? String(a.actor) : undefined,
+        });
+      case "agentry_list_deploys":
+        return await handleListDeploys({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          limit: typeof a.limit === "number" ? a.limit : undefined,
+          since: typeof a.since === "number" ? a.since : undefined,
+        });
+      case "agentry_track_test_event":
+        return await handleTrackTestEvent({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          event: a.event ? String(a.event) : "agentry_verify",
+        });
+      case "agentry_analytics_query":
+        return await handleAnalyticsQuery({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          query: String(a.query ?? ""),
+        });
+      case "agentry_install_guide":
+        return await handleInstallGuide({
+          framework: a.framework ? String(a.framework) : "node",
+          signal_types: Array.isArray(a.signal_types)
+            ? (a.signal_types as unknown[]).map(String)
+            : ["errors", "analytics", "deploys"],
+        });
+      case "agentry_verify_install":
+        return await handleVerifyInstall({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          skip: Array.isArray(a.skip) ? (a.skip as unknown[]).map(String) : [],
+        });
       default:
         return {
           error: {
@@ -893,5 +1061,290 @@ async function handleCaptureTestEvent(projectId?: string): Promise<ToolResult> {
     next_action: resp.case_id
       ? `Event ingested. Call \`agentry_get_case\` with case_id="${resp.case_id}" to see how it looks to the agent flow.`
       : "Event ingested. The case may take a moment to materialize — call `agentry_list_cases` shortly.",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Deploy events
+// ---------------------------------------------------------------------------
+
+async function handleRecordDeploy(input: {
+  project_id?: string;
+  sha: string;
+  branch?: string;
+  environment?: string;
+  message?: string;
+  url?: string;
+  actor?: string;
+}): Promise<ToolResult> {
+  if (!input.sha) {
+    return {
+      error: {
+        code: "missing_sha",
+        message: "sha is required",
+        next_action: "Pass the git SHA of the deployed commit.",
+      },
+    };
+  }
+  const cfg = loadConfig();
+  const r = requireProjectFromConfig(cfg, input.project_id);
+  if ("error" in r) return r.error;
+
+  const parsed = parseDsn(r.project.dsn);
+  if (!parsed) {
+    return {
+      error: {
+        code: "bad_dsn",
+        message: `Stored DSN for project ${r.id} is not parseable.`,
+        next_action: "Recreate the project via agentry_create_project.",
+      },
+    };
+  }
+
+  const resp = await api.recordDeploy(cfg, parsed.projectId, r.project.dsn, {
+    sha: input.sha,
+    ...(input.branch !== undefined ? { branch: input.branch } : {}),
+    ...(input.environment !== undefined ? { environment: input.environment } : {}),
+    ...(input.message !== undefined ? { message: input.message } : {}),
+    ...(input.url !== undefined ? { url: input.url } : {}),
+    ...(input.actor !== undefined ? { actor: input.actor } : {}),
+  });
+  return {
+    ok: true,
+    deploy_id: resp.id,
+    received_at: resp.received_at,
+    next_action:
+      "Deploy recorded. Future cases ingested after this timestamp will surface this deploy in their recent_deploys.",
+  };
+}
+
+async function handleListDeploys(input: {
+  project_id?: string;
+  limit?: number;
+  since?: number;
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  if (!cfg.api_key) {
+    return {
+      error: {
+        code: "no_key",
+        message: "No API key on file.",
+        next_action: "Call `agentry_login` first.",
+      },
+    };
+  }
+  const projectId = input.project_id ?? cfg.default_project_id;
+  if (!projectId) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project specified and no default project set.",
+        next_action: "Pass project_id, or set a default by creating a project.",
+      },
+    };
+  }
+  const optsArg: { limit?: number; since?: number } = {};
+  if (input.limit !== undefined) optsArg.limit = input.limit;
+  if (input.since !== undefined) optsArg.since = input.since;
+  const resp = await api.listDeploys(cfg, projectId, optsArg);
+  return {
+    project_id: projectId,
+    ...resp,
+    next_action:
+      "Cross-reference deploy received_at with case last_seen_at to attribute regressions.",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Analytics
+// ---------------------------------------------------------------------------
+
+async function handleTrackTestEvent(input: {
+  project_id?: string;
+  event: string;
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const r = requireProjectFromConfig(cfg, input.project_id);
+  if ("error" in r) return r.error;
+
+  const parsed = parseDsn(r.project.dsn);
+  if (!parsed) {
+    return {
+      error: {
+        code: "bad_dsn",
+        message: `Stored DSN for project ${r.id} is not parseable.`,
+        next_action: "Recreate the project via agentry_create_project.",
+      },
+    };
+  }
+  const eventName = input.event || "agentry_verify";
+  const resp = await api.trackEvent(cfg, parsed.projectId, r.project.dsn, {
+    event: eventName,
+    distinct_id: "agentry-mcp-test",
+    properties: { source: "agentry_track_test_event", ts: Math.floor(Date.now() / 1000) },
+  });
+  return {
+    ok: resp.ok ?? true,
+    event: eventName,
+    next_action:
+      "Event forwarded to PostHog. Use agentry_analytics_query to verify it landed " +
+      `(SELECT count() FROM events WHERE event='${eventName}' AND timestamp > now() - INTERVAL 5 MINUTE).`,
+  };
+}
+
+async function handleAnalyticsQuery(input: {
+  project_id?: string;
+  query: string;
+}): Promise<ToolResult> {
+  if (!input.query) {
+    return {
+      error: {
+        code: "missing_query",
+        message: "query (HogQL) is required",
+        next_action: "Pass a HogQL query string.",
+      },
+    };
+  }
+  const cfg = loadConfig();
+  if (!cfg.api_key) {
+    return {
+      error: {
+        code: "no_key",
+        message: "No API key on file.",
+        next_action: "Call `agentry_login` first.",
+      },
+    };
+  }
+  const projectId = input.project_id ?? cfg.default_project_id;
+  if (!projectId) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project specified and no default project set.",
+        next_action: "Pass project_id, or create a project.",
+      },
+    };
+  }
+  const resp = await api.analyticsQuery(cfg, projectId, input.query);
+  return {
+    project_id: projectId,
+    ...resp,
+    next_action:
+      "Interpret the rows. If you suspect a regression, call agentry_list_deploys to see if a deploy correlates.",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Install guide + comprehensive verification
+// ---------------------------------------------------------------------------
+
+async function handleInstallGuide(input: {
+  framework: string;
+  signal_types: string[];
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const guide = await api.getInstallGuide(cfg, input.framework);
+  // Filter steps if signal_types is a strict subset.
+  const wanted = new Set(input.signal_types);
+  const filteredSteps = guide.steps.filter((s) => {
+    // common + verify steps always shown
+    if (
+      ["install_sdk", "set_env_vars", "verify_install"].includes(s.id) ||
+      s.action === "verify"
+    ) return true;
+    if (s.id.startsWith("init_") || s.id.includes("error") || s.id.includes("uncaught") ||
+        s.id.includes("middleware") || s.id.includes("error_boundary"))
+      return wanted.has("errors");
+    if (s.id.startsWith("track_") || s.id.includes("analytics")) return wanted.has("analytics");
+    if (s.id.startsWith("fire_deploy") || s.id.includes("deploy")) return wanted.has("deploys");
+    return true;
+  });
+  return {
+    ...guide,
+    steps: filteredSteps,
+    next_action:
+      "Read each step in order. For 'edit' steps, find the file matching `file_hint` in the customer's repo " +
+      "and apply `code`. For 'run' steps, execute `command`. After all steps, call agentry_verify_install — " +
+      "that's the only proof the install actually works.",
+  };
+}
+
+async function handleVerifyInstall(input: {
+  project_id?: string;
+  skip: string[];
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const r = requireProjectFromConfig(cfg, input.project_id);
+  if ("error" in r) return r.error;
+
+  const skip = new Set(input.skip);
+  const checks: Record<string, { ok: boolean; detail: string }> = {};
+
+  if (!skip.has("errors")) {
+    try {
+      const resp = await handleCaptureTestEvent(r.id);
+      const ok = (resp as { ok?: boolean; case_id?: string | null; error?: unknown }).ok === true;
+      checks.errors = {
+        ok,
+        detail: ok
+          ? `synthetic error landed → case_id=${(resp as { case_id?: string | null }).case_id ?? "(pending)"}`
+          : `failed: ${JSON.stringify((resp as { error?: unknown }).error ?? resp)}`,
+      };
+    } catch (err) {
+      checks.errors = { ok: false, detail: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  if (!skip.has("analytics")) {
+    try {
+      const resp = await handleTrackTestEvent({ project_id: r.id, event: "agentry_verify_install" });
+      const ok = (resp as { ok?: boolean; error?: unknown }).ok === true;
+      checks.analytics = {
+        ok,
+        detail: ok
+          ? "synthetic analytics event forwarded to PostHog (verify with agentry_analytics_query if needed)"
+          : `failed: ${JSON.stringify((resp as { error?: unknown }).error ?? resp)}`,
+      };
+    } catch (err) {
+      checks.analytics = { ok: false, detail: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  if (!skip.has("deploys")) {
+    try {
+      const resp = await handleRecordDeploy({
+        project_id: r.id,
+        sha: `agentry-verify-${Date.now().toString(36)}`,
+        branch: "agentry-verify",
+        environment: "agentry-verify",
+        message: "synthetic deploy from agentry_verify_install",
+      });
+      const ok = (resp as { ok?: boolean }).ok === true;
+      checks.deploys = {
+        ok,
+        detail: ok
+          ? "synthetic deploy recorded"
+          : `failed: ${JSON.stringify((resp as { error?: unknown }).error ?? resp)}`,
+      };
+    } catch (err) {
+      checks.deploys = { ok: false, detail: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  const passed = Object.entries(checks).filter(([, v]) => v.ok).map(([k]) => k);
+  const failed = Object.entries(checks).filter(([, v]) => !v.ok).map(([k]) => k);
+
+  return {
+    ok: failed.length === 0,
+    summary: `${passed.length}/${Object.keys(checks).length} signal types verified`,
+    passed,
+    failed,
+    checks,
+    next_action:
+      failed.length === 0
+        ? "Install verified. Errors will land in agentry_list_cases; analytics in PostHog; deploys via agentry_list_deploys. " +
+          "The agent now has all three signal streams to investigate from."
+        : `Install incomplete. Failed signal types: ${failed.join(", ")}. ` +
+          "For each failed type, re-read its corresponding step in agentry_install_guide and fix.",
   };
 }

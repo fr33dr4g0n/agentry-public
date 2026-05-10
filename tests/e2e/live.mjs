@@ -334,6 +334,99 @@ async function main() {
     expect([401, 403, 404].includes(r.status), true, `user B listing user A's cases -> 4xx (got ${r.status})`);
   }
 
+  // 7.5 Install guide
+  console.log("\n[install guide]");
+  {
+    const r = await http("GET", "/v1/install/guide?framework=node");
+    expect(r.status, 200, "GET install/guide 200");
+    if (Array.isArray(r.json?.steps) && r.json.steps.length >= 5) ok(`guide has ${r.json.steps.length} steps`);
+    else bad("guide steps missing", r.json);
+    const verifyStep = r.json?.steps?.find?.((s) => s.id === "verify_install");
+    if (verifyStep) ok("verify_install step present");
+    else bad("verify_install step missing", null);
+    if (Array.isArray(r.json?.signal_health_principles) && r.json.signal_health_principles.length > 0)
+      ok("signal_health_principles populated");
+    else bad("signal_health_principles missing", null);
+  }
+  {
+    const r = await http("GET", "/v1/install/guide?framework=express");
+    expect(r.status, 200, "GET install/guide express 200");
+    const expressMw = r.json?.steps?.find?.((s) => s.id === "express_error_middleware");
+    if (expressMw) ok("express middleware step included for express framework");
+    else bad("express middleware step missing", null);
+  }
+  {
+    const r = await http("GET", "/v1/install/guide?framework=node&signal_types=errors,deploys");
+    expect(r.status, 200, "GET install/guide signal filter 200");
+    const hasAnalyticsStep = r.json?.steps?.some?.((s) => s.id === "track_signup_completed");
+    if (!hasAnalyticsStep) ok("analytics steps filtered out");
+    else bad("analytics step leaked through filter", null);
+  }
+
+  // 7.6 Deploys
+  console.log("\n[deploys]");
+  let deployId;
+  {
+    const r = await http("POST", `/v1/deploys/${projId}/`, {
+      headers: { authorization: `Bearer ${projDsn}` },
+      body: { sha: "deadbeef1234", branch: "main", environment: "production", message: "first deploy" },
+    });
+    expect(r.status, 200, "deploy ingest 200");
+    if (r.json?.id) ok("deploy id returned");
+    else bad("deploy id missing", r.json);
+    deployId = r.json?.id;
+  }
+  {
+    const r = await http("GET", `/v1/projects/${projId}/deploys?limit=10`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+    });
+    expect(r.status, 200, "list deploys 200");
+    const found = r.json?.deploys?.find?.((d) => d.id === deployId);
+    if (found) ok("deploy appears in list");
+    else bad("deploy missing from list", r.json);
+  }
+  {
+    // Wrong DSN should be rejected.
+    const r = await http("POST", `/v1/deploys/${projId}/`, {
+      headers: { authorization: `Bearer agnt_wrong.token` },
+      body: { sha: "x" },
+    });
+    expect(r.status, 401, "deploy wrong DSN -> 401");
+  }
+  {
+    // After a deploy, the case detail should surface it.
+    // Trigger a fresh fingerprint then read the case.
+    const ev = {
+      exception: { values: [{ type: "DeployTestError", value: "post-deploy",
+        stacktrace: { frames: [{ filename: "src/postdeploy.ts", function: "fn", lineno: 1, in_app: true }] } }] },
+    };
+    const ing = await http("POST", `/v1/store/${projId}/`, {
+      headers: { authorization: `Bearer ${projDsn}` },
+      body: ev,
+    });
+    expect(ing.status, 200, "ingest post-deploy 200");
+    if (ing.json?.case_id) {
+      const detail = await http("GET", `/v1/cases/${ing.json.case_id}`, {
+        headers: { authorization: `Bearer ${aliceKey}` },
+      });
+      expect(detail.status, 200, "fresh case detail 200");
+      if (Array.isArray(detail.json?.recent_deploys) && detail.json.recent_deploys.length > 0)
+        ok("recent_deploys surfaces in case detail");
+      else bad("recent_deploys missing from case", detail.json);
+    }
+  }
+
+  // 7.7 Analytics — should 503 because PostHog isn't configured in dev
+  console.log("\n[analytics — PostHog unconfigured]");
+  {
+    const r = await http("POST", `/v1/track/${projId}/`, {
+      headers: { authorization: `Bearer ${projDsn}` },
+      body: { event: "test", distinct_id: "u1", properties: { ok: true } },
+    });
+    expect(r.status, 503, "track without PostHog config -> 503");
+    expect(r.json?.error?.code, "analytics_not_configured", "analytics_not_configured code");
+  }
+
   // 8. Bad inputs / edges (don't 5xx)
   console.log("\n[robustness]");
   {

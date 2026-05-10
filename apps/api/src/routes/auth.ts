@@ -5,6 +5,7 @@ import { errors, mintApiKey, uuidv7 } from "@agentry/shared";
 import { apiKeys, users } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey } from "../middleware.js";
+import { ensurePosthogForUser, isPosthogConfigured } from "../posthog.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -322,6 +323,29 @@ async function provisionUserAndMintKey(
     createdAt: Math.floor(Date.now() / 1000),
   });
 
+  // Best-effort PostHog provisioning. If PostHog is unconfigured or unreachable,
+  // we still hand back the API key and surface the failure as a `posthog`
+  // sub-object so the calling agent can decide whether to retry later.
+  let posthog: { provisioned: boolean; posthog_project_id: number | null; error?: string } = {
+    provisioned: false,
+    posthog_project_id: null,
+  };
+  if (isPosthogConfigured(c.env)) {
+    try {
+      const r = await ensurePosthogForUser(c.env, userId, ident.githubUsername);
+      posthog = {
+        provisioned: r.provisioned,
+        posthog_project_id: r.posthogProjectId,
+      };
+    } catch (err) {
+      posthog = {
+        provisioned: false,
+        posthog_project_id: null,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   return c.json({
     status: "ok",
     api_key: minted.raw,
@@ -333,9 +357,11 @@ async function provisionUserAndMintKey(
       email: ident.email,
       avatar_url: ident.avatarUrl,
     },
+    posthog,
     next_action:
       "Store this api_key in ~/.agentry/config.json — it won't be shown again. " +
-      "Then call POST /v1/projects to create a project.",
+      "Then call POST /v1/projects to create a project, then run agentry_install_guide " +
+      "for the comprehensive setup checklist.",
   });
 }
 

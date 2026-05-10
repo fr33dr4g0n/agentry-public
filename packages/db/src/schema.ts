@@ -111,6 +111,35 @@ export const suppressionEntries = sqliteTable("suppression_entries", {
   projIdx: index("suppression_proj_idx").on(t.projectId),
 }));
 
+// Deploy events. Agents read recent deploys to attribute case regressions.
+export const deploys = sqliteTable("deploys", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  sha: text("sha").notNull(),
+  branch: text("branch"),
+  environment: text("environment"),
+  message: text("message"),
+  url: text("url"),
+  actor: text("actor"),
+  receivedAt: integer("received_at").notNull().default(now),
+}, (t) => ({
+  projTimeIdx: index("deploys_proj_time_idx").on(t.projectId, t.receivedAt),
+}));
+
+// One PostHog project per agentry user, auto-provisioned on first GitHub login.
+// Tokens are encrypted at rest using AES-GCM with AGENTRY_TOKEN_ENC_KEY.
+export const posthogProjects = sqliteTable("posthog_projects", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  posthogProjectId: integer("posthog_project_id").notNull(),
+  posthogProjectApiKey: text("posthog_project_api_key").notNull(),  // write key (capture)
+  readTokenEnc: text("read_token_enc").notNull(),                   // personal API key, encrypted
+  readTokenIv: text("read_token_iv").notNull(),                     // AES-GCM IV (base64url)
+  posthogHost: text("posthog_host").notNull(),
+  createdAt: integer("created_at").notNull().default(now),
+}, (t) => ({
+  posthogProjIdx: uniqueIndex("posthog_projects_ph_id_idx").on(t.posthogProjectId),
+}));
+
 export type User = typeof users.$inferSelect;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type Project = typeof projects.$inferSelect;
@@ -118,3 +147,5 @@ export type Event = typeof events.$inferSelect;
 export type Case = typeof cases.$inferSelect;
 export type AgentRun = typeof agentRuns.$inferSelect;
 export type SuppressionEntry = typeof suppressionEntries.$inferSelect;
+export type Deploy = typeof deploys.$inferSelect;
+export type PosthogProject = typeof posthogProjects.$inferSelect;

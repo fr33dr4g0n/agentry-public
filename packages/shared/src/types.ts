@@ -87,4 +87,5 @@ export interface AgentryProjectConfig {
   dsn: string;
   local_path: string | null;
   default_branch: string;
+  install_verified?: boolean;
 }

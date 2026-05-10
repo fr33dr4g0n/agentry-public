@@ -244,4 +244,92 @@ export const api = {
       dsnAuth: publicKey,
     });
   },
+
+  // Deploys: ingest with DSN auth, list with API-key auth.
+  recordDeploy(
+    cfg: AgentryConfig,
+    projectId: string,
+    publicKey: string,
+    body: { sha: string; branch?: string; environment?: string; message?: string; url?: string; actor?: string }
+  ): Promise<{ id: string; received_at: number }> {
+    return apiFetch<{ id: string; received_at: number }>(cfg, "", {
+      absoluteUrl: `${cfg.server_url.replace(/\/$/, "")}/v1/deploys/${encodeURIComponent(projectId)}/`,
+      method: "POST",
+      body,
+      dsnAuth: publicKey,
+    });
+  },
+  listDeploys(
+    cfg: AgentryConfig,
+    projectId: string,
+    opts?: { limit?: number; since?: number }
+  ): Promise<{ deploys: Array<Record<string, unknown>> }> {
+    const qs = [
+      opts?.limit ? `limit=${encodeURIComponent(opts.limit)}` : null,
+      opts?.since ? `since=${encodeURIComponent(opts.since)}` : null,
+    ].filter(Boolean).join("&");
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/deploys${qs ? "?" + qs : ""}`,
+    );
+  },
+
+  // Analytics: forward an event (DSN-auth, hits PostHog via the agentry proxy)
+  trackEvent(
+    cfg: AgentryConfig,
+    projectId: string,
+    publicKey: string,
+    body: { event: string; distinct_id?: string; properties?: Record<string, unknown> }
+  ): Promise<{ ok: boolean }> {
+    return apiFetch<{ ok: boolean }>(cfg, "", {
+      absoluteUrl: `${cfg.server_url.replace(/\/$/, "")}/v1/track/${encodeURIComponent(projectId)}/`,
+      method: "POST",
+      body,
+      dsnAuth: publicKey,
+    });
+  },
+  // Analytics queries (HogQL passthrough, api-key auth).
+  analyticsQuery(
+    cfg: AgentryConfig,
+    projectId: string,
+    query: string,
+  ): Promise<{ results: unknown[]; columns: string[] | null; types: string[] | null }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/analytics/query`,
+      { method: "POST", body: { query } },
+    );
+  },
+
+  // Comprehensive install guide.
+  getInstallGuide(
+    cfg: AgentryConfig,
+    framework: string,
+  ): Promise<InstallGuide> {
+    return apiFetch<InstallGuide>(
+      cfg,
+      `/v1/install/guide?framework=${encodeURIComponent(framework)}`,
+      { skipAuth: true },
+    );
+  },
 };
+
+export interface InstallGuideStep {
+  id: string;
+  title: string;
+  why: string;
+  action: "run" | "edit" | "verify" | "manual";
+  file_hint?: string;
+  command?: string;
+  code?: string;
+  validate: string;
+}
+
+export interface InstallGuide {
+  framework: string;
+  signal_types: string[];
+  steps: InstallGuideStep[];
+  pitfalls: string[];
+  signal_health_principles: string[];
+  next_action: string;
+}

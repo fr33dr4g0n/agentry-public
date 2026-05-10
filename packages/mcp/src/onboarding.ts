@@ -3,7 +3,7 @@
 
 import type { AgentryConfig } from "@agentry/shared";
 
-export type OnboardingState = "no_key" | "no_project" | "ready";
+export type OnboardingState = "no_key" | "no_project" | "needs_install" | "ready";
 
 export interface OnboardingHint {
   state: OnboardingState;
@@ -37,12 +37,27 @@ export function getOnboardingHint(cfg: AgentryConfig): OnboardingHint {
         "API key on file, but no project yet. Call `agentry_create_project` to mint a DSN.",
     };
   }
+  // After project creation, the SDK isn't installed yet in the customer's app.
+  // We don't know for sure — but we lean on a local marker. If install_verified
+  // hasn't been set on any project, treat as needs_install.
+  const anyVerified = projectIds.some((id) => cfg.projects[id]?.install_verified === true);
+  if (!anyVerified) {
+    return {
+      state: "needs_install",
+      next_tool: "agentry_install_guide",
+      next_action:
+        "Project created, but the SDK isn't proven installed yet. " +
+        "Call `agentry_install_guide` for the comprehensive checklist, walk through it, then call " +
+        "`agentry_verify_install` — that's how we know errors, analytics, and deploys are actually flowing.",
+      message: "Project ready, but install hasn't been verified. Run agentry_install_guide → agentry_verify_install.",
+    };
+  }
   return {
     state: "ready",
     next_tool: "agentry_list_cases",
     next_action:
       "Onboarding done. Call `agentry_list_cases` to see open errors, or " +
-      "`agentry_capture_test_event` to verify ingest end-to-end.",
-    message: "Set up — API key + at least one project. Ready to investigate cases.",
+      "`agentry_analytics_query` to investigate funnels.",
+    message: "Set up — install verified, signals flowing. Ready to investigate.",
   };
 }

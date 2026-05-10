@@ -6,6 +6,8 @@ import { caseRouter, projectScopedCases } from "./routes/cases.js";
 import suppressionRoutes from "./routes/suppressions.js";
 import ingestRoutes from "./routes/ingest.js";
 import discoveryRoutes from "./routes/discovery.js";
+import deployRoutes from "./routes/deploys.js";
+import trackRoutes from "./routes/track.js";
 import type { AppBindings, Env } from "./env.js";
 
 export function createApp() {
@@ -90,6 +92,12 @@ export function createApp() {
 
   // Ingest: /v1/store/:project_id/
   app.route("/v1", ingestRoutes);
+
+  // Deploy events (POST DSN-auth, GET api-key-auth, full paths)
+  app.route("/", deployRoutes);
+
+  // Analytics: /v1/track/:project_id/ (DSN), /v1/projects/:id/analytics/query (api key)
+  app.route("/", trackRoutes);
 
   return app;
 }

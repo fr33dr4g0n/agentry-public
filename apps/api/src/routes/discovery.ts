@@ -1,65 +1,63 @@
 import { Hono } from "hono";
+import { buildInstallGuide, detectFramework } from "../install-guide.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
 
 const LLMS_TXT = `# agentry
 
-Agent-first error monitoring. The user's own Claude Code investigates errors via MCP.
-
-## What this is
-
-agentry receives error events from your apps via SDKs (Sentry-protocol-compatible),
-stores them, and serves them to your Claude Code session over MCP. Every response is
-shaped for an agent: machine-readable error codes, next_action hints, and structured
-case detail with stack traces, deploy SHA, and suppression hints.
+Agent-first incident inbox: errors, analytics, deploys — all routed to the user's
+Claude Code session via MCP. The user's own agent investigates and fixes.
 
 ## Onboarding (≤ 2 prompts of human input)
 
 1. Add the MCP server to Claude Code:
    claude mcp add agentry -- npx -y @agentry/mcp
 
-2. In Claude Code, say: "set me up with agentry, my email is you@example.com"
-   The agent will sign you up, mint an api key, create a project, and give you the
-   exact code to paste in your app.
+2. In Claude Code, say: "set me up with agentry"
+   The agent will run the GitHub device flow, mint an api key, provision your
+   PostHog project, create an agentry project, fetch the comprehensive install
+   guide, and run agentry_verify_install at the end.
 
-## API endpoints
+## Signal types
 
-- POST /v1/auth/signup           {email}                              -> {api_key, user_id, prefix, next_action}
-- POST /v1/auth/keys/rotate      Authorization: Bearer <key>          -> new key, revokes old
-- POST /v1/projects              {name, repo_url?, default_branch?}    -> {id, dsn, install_snippet}
-- GET  /v1/projects                                                   -> list (no DSNs — only shown at creation)
-- GET  /v1/projects/:id                                               -> detail
-- GET  /v1/projects/:id/cases?status=open                             -> case list
-- GET  /v1/cases/:id                                                  -> case detail with recent_events + next_actions
-- PATCH /v1/cases/:id            {status?, agent_summary?, pr_url?}    -> updated case
-- POST /v1/cases/:id/runs        {status, summary_md?, pr_url?}        -> recorded agent run
-- POST /v1/projects/:id/suppressions   {fingerprint_pattern, action, reason?, hint_text?}
+- Errors  (Sentry-wire-protocol ingest)         -> POST /v1/store/:project_id/
+- Analytics (forwarded to per-user PostHog)     -> POST /v1/track/:project_id/
+- Deploys (linked to cases via timestamps)      -> POST /v1/deploys/:project_id/
+
+All three use the same DSN auth (Bearer or X-Sentry-Auth or ?sentry_key=).
+
+## API surface
+
+Auth (no key required):
+- POST /v1/auth/device                                          start GitHub device flow
+- POST /v1/auth/device/poll        {device_code}                poll until authorized -> {api_key, user_id, github, posthog}
+
+Auth (api-key required, header: Authorization: Bearer <agk_…>):
+- POST /v1/auth/keys/rotate                                     mints new key, revokes current
+- POST /v1/projects                                             create project -> {id, dsn, install_snippet}
+- GET  /v1/projects
+- GET  /v1/projects/:id
+- GET  /v1/projects/:id/cases?status=open
+- GET  /v1/cases/:id                                            case detail (incl. recent_deploys)
+- PATCH /v1/cases/:id
+- POST /v1/cases/:id/runs
+- POST /v1/projects/:id/suppressions
 - GET  /v1/projects/:id/suppressions
-- POST /v1/store/:project_id/    Sentry-wire-protocol ingest. Auth via Bearer DSN, X-Sentry-Auth, or ?sentry_key=
-- GET  /v1/install/sdk/node                                           -> {language, code, required_env}
+- GET  /v1/projects/:id/deploys?limit=20&since=<unixSeconds>
+- POST /v1/projects/:id/analytics/query  {query: "<HogQL>"}     PostHog passthrough
 
-## Ingest format
-
-The /v1/store/:project_id/ endpoint accepts the Sentry envelope shape. Minimum:
-- exception.values[0].type, value
-- exception.values[0].stacktrace.frames[]
-- release (mapped to deploy_sha if deploy_sha not set)
-- environment
-
-The server fingerprints by sha1(error_type + ":" + frame0.fn + ":" + frame0.file + ":" + frame0.lineno).
+Discovery (no auth):
+- GET  /                       service metadata
+- GET  /llms.txt               this file
+- GET  /v1/install/guide?framework=node|next|express   comprehensive setup checklist
+- GET  /v1/install/sdk/node    minimal init snippet
 
 ## Errors
 
 Every error response: {"error": {"code": "...", "message": "...", "next_action": "..."}}.
-HTTP status mirrors HTTP semantics. Codes include: invalid_payload, unauthorized,
-invalid_api_key, invalid_dsn, not_found, forbidden, rate_limited, signup_disabled.
-
-## v0 caveats
-
-- No email verification. Same email twice mints a new key (existing keys remain valid).
-- Hard-gated behind ALLOW_UNVERIFIED_SIGNUP env var. Not for public deploy.
-- No web UI. Everything is API + MCP.
+Codes include: invalid_payload, unauthorized, invalid_api_key, invalid_dsn, not_found,
+forbidden, rate_limited, payload_too_large, posthog_capture_failed, analytics_not_configured.
 `;
 
 router.get("/", (c) => {
@@ -74,6 +72,15 @@ router.get("/", (c) => {
 
 router.get("/llms.txt", (c) => {
   return c.text(LLMS_TXT, 200, { "content-type": "text/plain; charset=utf-8" });
+});
+
+router.get("/v1/install/guide", (c) => {
+  const framework = detectFramework(c.req.query("framework"));
+  const sigParam = c.req.query("signal_types");
+  const signalTypes = sigParam
+    ? sigParam.split(",").map((s) => s.trim()).filter(Boolean)
+    : ["errors", "analytics", "deploys"];
+  return c.json(buildInstallGuide(framework, signalTypes));
 });
 
 router.get("/v1/install/sdk/node", (c) => {

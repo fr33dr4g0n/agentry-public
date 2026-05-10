@@ -4,6 +4,22 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-10 — Three signal types: errors, analytics, deploys + comprehensive install
+
+Agentry now consumes three signal streams, all routing into the same case-investigation loop:
+
+- **Errors** (existing) — Sentry-protocol ingest at `/v1/store/:project_id/`
+- **Analytics** (new) — `/v1/track/:project_id/` proxies to a user-specific PostHog project. Multi-tenant: every agentry user gets one PostHog project auto-provisioned at GitHub login. PostHog handles all storage, dashboards, funnels, retention, replay.
+- **Deploys** (new) — `/v1/deploys/:project_id/` records deploy events. Case detail surfaces the last 5 deploys via `recent_deploys` for regression attribution.
+
+**Why deploys is huge:** "what regressed after deploy X" is the most-asked question during incident investigation. Adding the event type was nearly free (one new table, one new route) and unlocks 80% of the agent's RCA value.
+
+**PostHog hosting:** the API supports the integration but is dormant until POSTHOG_HOST + POSTHOG_ORG_ID + POSTHOG_MASTER_API_KEY + AGENTRY_TOKEN_ENC_KEY are set. Multi-tenancy via PostHog's native projects + scoped Personal API Keys (one per agentry user, scoped to their project only). Read tokens are AES-GCM-encrypted at rest with a 32-byte master key.
+
+**Comprehensive install guide:** `GET /v1/install/guide?framework=node|next|express` returns a framework-aware checklist of steps with file hints, code snippets, and per-step validation. The MCP exposes this as `agentry_install_guide`. After the agent walks through it, `agentry_verify_install` fires synthetic error + analytics + deploy events and reports which signals actually reached agentry. Errors that don't error and analytics that don't fire aren't useful — verification is the only proof the install works.
+
+The onboarding state machine now has four states: `no_key → no_project → needs_install → ready`. `agentry_verify_install` flipping all green is the only way to advance to `ready`.
+
 ## 2026-05-10 — Switched auth to GitHub OAuth device flow
 
 Replaced the v0 email-signup placeholder with GitHub device flow. Notes:

@@ -4,6 +4,8 @@
 import { createClient } from "@libsql/client";
 
 const DROP_STATEMENTS: string[] = [
+  "DROP TABLE IF EXISTS posthog_projects",
+  "DROP TABLE IF EXISTS deploys",
   "DROP TABLE IF EXISTS suppression_entries",
   "DROP TABLE IF EXISTS agent_runs",
   "DROP TABLE IF EXISTS cases",
@@ -114,6 +116,32 @@ const STATEMENTS: string[] = [
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
   )`,
   `CREATE INDEX suppression_proj_idx ON suppression_entries (project_id)`,
+
+  `CREATE TABLE deploys (
+    id text PRIMARY KEY NOT NULL,
+    project_id text NOT NULL,
+    sha text NOT NULL,
+    branch text,
+    environment text,
+    message text,
+    url text,
+    actor text,
+    received_at integer DEFAULT (unixepoch()) NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
+  )`,
+  `CREATE INDEX deploys_proj_time_idx ON deploys (project_id, received_at)`,
+
+  `CREATE TABLE posthog_projects (
+    user_id text PRIMARY KEY NOT NULL,
+    posthog_project_id integer NOT NULL,
+    posthog_project_api_key text NOT NULL,
+    read_token_enc text NOT NULL,
+    read_token_iv text NOT NULL,
+    posthog_host text NOT NULL,
+    created_at integer DEFAULT (unixepoch()) NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE cascade
+  )`,
+  `CREATE UNIQUE INDEX posthog_projects_ph_id_idx ON posthog_projects (posthog_project_id)`,
 ];
 
 async function main() {

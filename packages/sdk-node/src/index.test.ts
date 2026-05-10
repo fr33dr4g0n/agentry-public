@@ -325,3 +325,72 @@ describe("buildEventPayload", () => {
     expect(p.user).toEqual({ id: "u1" });
   });
 });
+
+describe("AgentryClient.track / deploy", () => {
+  it("track() POSTs to /v1/track/:project_id/ with Bearer DSN auth", async () => {
+    const fetchMock = mockFetchOk();
+    const c = new AgentryClient();
+    c.init({ dsn: DSN, serverUrl: SERVER_URL });
+
+    const ok = await c.track("signup_completed", {
+      distinctId: "u_42",
+      properties: { method: "github", plan: "free" },
+    });
+    expect(ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${SERVER_URL}/v1/track/${PROJECT_ID}/`);
+    expect(init?.method).toBe("POST");
+    const headers = init?.headers as Record<string, string>;
+    expect(headers["authorization"]).toBe(`Bearer ${DSN}`);
+    const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+    expect(body.event).toBe("signup_completed");
+    expect(body.distinct_id).toBe("u_42");
+    expect((body.properties as { method: string }).method).toBe("github");
+  });
+
+  it("track() before init returns false and warns once", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const c = new AgentryClient();
+    const ok = await c.track("noop");
+    expect(ok).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("track() returns false on 4xx", async () => {
+    mockFetchStatus(400);
+    const c = new AgentryClient();
+    c.init({ dsn: DSN, serverUrl: SERVER_URL });
+    const ok = await c.track("dropped");
+    expect(ok).toBe(false);
+  });
+
+  it("deploy() POSTs to /v1/deploys/:project_id/ with the right body", async () => {
+    const fetchMock = mockFetchOk();
+    const c = new AgentryClient();
+    c.init({ dsn: DSN, serverUrl: SERVER_URL });
+    const ok = await c.deploy({
+      sha: "feedface",
+      branch: "main",
+      environment: "production",
+      message: "chore: bump",
+      url: "https://github.com/x/y/commit/feedface",
+      actor: "fr33dr4g0n",
+    });
+    expect(ok).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${SERVER_URL}/v1/deploys/${PROJECT_ID}/`);
+    const body = JSON.parse(init?.body as string) as { sha: string; branch: string };
+    expect(body.sha).toBe("feedface");
+    expect(body.branch).toBe("main");
+  });
+
+  it("deploy() with no sha returns false without firing", async () => {
+    const fetchMock = mockFetchOk();
+    const c = new AgentryClient();
+    c.init({ dsn: DSN, serverUrl: SERVER_URL });
+    const ok = await c.deploy({ sha: "" });
+    expect(ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
