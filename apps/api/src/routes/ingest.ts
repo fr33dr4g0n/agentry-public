@@ -13,6 +13,7 @@ import { cases, events, projects, suppressionEntries } from "@agentry/db/schema"
 import { getDb } from "../db.js";
 import { matchesPattern } from "./cases.js";
 import { fireWebhooks } from "../webhooks.js";
+import { incrementUsage } from "../usage.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -219,6 +220,9 @@ async function handleIngest(c: Context<AppBindings>) {
       prUrl: null,
     });
   }
+
+  // Bump usage counter (best-effort, never blocks the request).
+  await incrementUsage(c.env, projectId, "errors");
 
   // Fire webhooks for case.created (new fingerprints only). waitUntil keeps
   // delivery off the request critical path.

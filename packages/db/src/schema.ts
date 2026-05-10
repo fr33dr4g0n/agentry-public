@@ -126,6 +126,44 @@ export const deploys = sqliteTable("deploys", {
   projTimeIdx: index("deploys_proj_time_idx").on(t.projectId, t.receivedAt),
 }));
 
+// Per-month usage counters keyed by (project_id, period, signal_type).
+// Incremented on every ingest. Lets the agent see "you've used X of your Y events".
+export const usageCounters = sqliteTable("usage_counters", {
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  // YYYY-MM, e.g. "2026-05"
+  period: text("period").notNull(),
+  // "errors" | "analytics" | "deploys"
+  signalType: text("signal_type").notNull(),
+  count: integer("count").notNull().default(0),
+}, (t) => ({
+  pk: uniqueIndex("usage_counters_pk").on(t.projectId, t.period, t.signalType),
+}));
+
+// Alert definitions. Customer's cron calls /evaluate to fire the webhook
+// when threshold crosses. agentry stores the recipe + threshold + which webhook.
+export const alerts = sqliteTable("alerts", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  recipeId: text("recipe_id").notNull(),
+  paramsJson: text("params_json").notNull().default("{}"),
+  // Which numeric column of the recipe's result rows we evaluate
+  thresholdColumn: text("threshold_column").notNull(),
+  // gt / gte / lt / lte / eq
+  thresholdOp: text("threshold_op").notNull(),
+  thresholdValue: text("threshold_value").notNull(),  // stored as string to handle floats safely
+  // Which webhook to fire when crossed; null = use all active project webhooks
+  webhookId: text("webhook_id"),
+  active: integer("active").notNull().default(1),
+  createdAt: integer("created_at").notNull().default(now),
+  lastEvaluatedAt: integer("last_evaluated_at"),
+  lastTriggeredAt: integer("last_triggered_at"),
+  lastValue: text("last_value"),
+}, (t) => ({
+  projIdx: index("alerts_proj_idx").on(t.projectId, t.active),
+}));
+
 // Webhook subscriptions. Each project can register multiple URLs for specific
 // event types. Signing secret is stored as a hash; raw value shown once at creation.
 export const webhooks = sqliteTable("webhooks", {
@@ -169,3 +207,5 @@ export type SuppressionEntry = typeof suppressionEntries.$inferSelect;
 export type Deploy = typeof deploys.$inferSelect;
 export type PosthogProject = typeof posthogProjects.$inferSelect;
 export type Webhook = typeof webhooks.$inferSelect;
+export type UsageCounter = typeof usageCounters.$inferSelect;
+export type Alert = typeof alerts.$inferSelect;

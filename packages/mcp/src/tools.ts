@@ -7,6 +7,13 @@ import { parseDsn } from "@agentry/shared";
 import { api, type ApiError } from "./api.js";
 import { loadConfig, saveConfig } from "./config.js";
 import { getOnboardingHint } from "./onboarding.js";
+import {
+  getMemoryPath,
+  readCaseSection,
+  upsertCaseSection,
+  MEMORY_FILENAME,
+} from "./memory.js";
+import * as fs from "node:fs";
 
 // MCP tool descriptor (matches @modelcontextprotocol/sdk shape).
 export interface ToolDescriptor {
@@ -378,6 +385,130 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
+    name: "agentry_project_health",
+    description:
+      "Heartbeat / state-of-project view. Returns last_event_received_at, last_deploy_at, " +
+      "events_last_hour, open_cases count, usage_this_month with caps and percentages, and per-webhook " +
+      "last_status. Use this when the user asks 'is everything working?' or to detect ingest gaps " +
+      "('we shipped 2h ago and no events have come in — something broke').",
+    inputSchema: {
+      type: "object",
+      properties: { project_id: { type: "string" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_create_alert",
+    description:
+      "Store an alert definition: a recipe + parameters + threshold + which webhook to fire. " +
+      "agentry doesn't run the schedule for you — your cron / GitHub Actions / Cloudflare Cron " +
+      "calls POST /alerts/:id/evaluate when you want the check run. On threshold cross, agentry " +
+      "fires the linked webhook so your endpoint reacts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        recipe_id: { type: "string", description: "Analytics-backend recipes only for v0." },
+        threshold_column: { type: "string" },
+        threshold_op: { type: "string", enum: ["gt", "gte", "lt", "lte", "eq"] },
+        threshold_value: { type: "number" },
+        params: { type: "object", additionalProperties: true },
+        description: { type: "string" },
+        webhook_id: { type: "string" },
+        project_id: { type: "string" },
+      },
+      required: ["name", "recipe_id", "threshold_column", "threshold_op", "threshold_value"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_list_alerts",
+    description: "List configured alerts with last_evaluated_at / last_triggered_at / last_value.",
+    inputSchema: {
+      type: "object",
+      properties: { project_id: { type: "string" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_evaluate_alert",
+    description:
+      "Run an alert's recipe NOW, compare against the threshold, fire the linked webhook if crossed. " +
+      "Returns {triggered, fired, current_value}. Call this from your scheduler.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        alert_id: { type: "string" },
+        project_id: { type: "string" },
+      },
+      required: ["alert_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_delete_alert",
+    description: "Remove an alert definition.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        alert_id: { type: "string" },
+        project_id: { type: "string" },
+      },
+      required: ["alert_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_remember",
+    description:
+      "Append/update a markdown section about a case in the local agentry_memory.md file at the project's local_path. " +
+      "Use this when you've learned something investigating a case (root cause, suspect deploy, the fix you applied, " +
+      "what to watch out for). Future investigations of similar cases will see these notes via the agent's file-reading " +
+      "tools — this is the agent's persistent memory. Safe to commit. " +
+      "If the case_id section already exists, it's overwritten.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        case_id: { type: "string" },
+        summary: {
+          type: "string",
+          description:
+            "Markdown body — what was learned. Be specific: 'introduced by deploy abc123 which removed null guard from user.email; fixed in PR #91 by restoring guard + adding test'.",
+        },
+        fingerprint: { type: "string" },
+        status: { type: "string", description: "open / investigating / resolved / spurious" },
+        error_type: { type: "string" },
+        pr_url: { type: "string" },
+        watch_for: {
+          type: "string",
+          description: "Heuristic for spotting similar bugs in the future ('check notification_service.ts:142 for the same pattern').",
+        },
+        tags: { type: "array", items: { type: "string" } },
+        project_id: {
+          type: "string",
+          description: "Defaults to the local default project (the file lives in that project's local_path).",
+        },
+      },
+      required: ["case_id", "summary"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_recall",
+    description:
+      "Read the current contents of `<local_path>/agentry_memory.md`. " +
+      "Useful when investigating a new case to see if a similar one was handled before. " +
+      "You can also use the standard file-reading tools directly — this is just a convenience.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        case_id: { type: "string", description: "If set, returns just this case's section." },
+        project_id: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "agentry_register_webhook",
     description:
       "Register a webhook URL to receive signed POSTs when interesting things happen. " +
@@ -700,6 +831,49 @@ export async function dispatchTool(
         return await handleSuggestedNextSteps(
           a.project_id ? String(a.project_id) : undefined,
         );
+      case "agentry_project_health":
+        return await handleProjectHealth(a.project_id ? String(a.project_id) : undefined);
+      case "agentry_create_alert":
+        return await handleCreateAlert({
+          name: String(a.name ?? ""),
+          recipe_id: String(a.recipe_id ?? ""),
+          threshold_column: String(a.threshold_column ?? ""),
+          threshold_op: String(a.threshold_op ?? ""),
+          threshold_value: typeof a.threshold_value === "number" ? a.threshold_value : Number(a.threshold_value),
+          params: a.params && typeof a.params === "object" ? (a.params as Record<string, unknown>) : {},
+          description: a.description ? String(a.description) : undefined,
+          webhook_id: a.webhook_id ? String(a.webhook_id) : undefined,
+          project_id: a.project_id ? String(a.project_id) : undefined,
+        });
+      case "agentry_list_alerts":
+        return await handleListAlerts(a.project_id ? String(a.project_id) : undefined);
+      case "agentry_evaluate_alert":
+        return await handleEvaluateAlert({
+          alert_id: String(a.alert_id ?? ""),
+          project_id: a.project_id ? String(a.project_id) : undefined,
+        });
+      case "agentry_delete_alert":
+        return await handleDeleteAlert({
+          alert_id: String(a.alert_id ?? ""),
+          project_id: a.project_id ? String(a.project_id) : undefined,
+        });
+      case "agentry_remember":
+        return await handleRemember({
+          case_id: String(a.case_id ?? ""),
+          summary: String(a.summary ?? ""),
+          fingerprint: a.fingerprint ? String(a.fingerprint) : undefined,
+          status: a.status ? String(a.status) : undefined,
+          error_type: a.error_type ? String(a.error_type) : undefined,
+          pr_url: a.pr_url ? String(a.pr_url) : undefined,
+          watch_for: a.watch_for ? String(a.watch_for) : undefined,
+          tags: Array.isArray(a.tags) ? (a.tags as unknown[]).map(String) : undefined,
+          project_id: a.project_id ? String(a.project_id) : undefined,
+        });
+      case "agentry_recall":
+        return handleRecall({
+          case_id: a.case_id ? String(a.case_id) : undefined,
+          project_id: a.project_id ? String(a.project_id) : undefined,
+        });
       case "agentry_register_webhook":
         return await handleRegisterWebhook({
           url: String(a.url ?? ""),
@@ -1756,4 +1930,202 @@ async function handleAutomationDocs(): Promise<ToolResult> {
       "can drop into the customer's repo. After deploying their endpoint, call agentry_register_webhook " +
       "with the URL, then agentry_test_webhook to confirm.",
   };
+}
+
+// ---------------------------------------------------------------------------
+// Local memory file (agentry_memory.md)
+// ---------------------------------------------------------------------------
+
+function resolveLocalPath(cfg: AgentryConfig, projectId?: string): { id: string; localPath: string } | null {
+  const id = projectId ?? cfg.default_project_id;
+  if (!id) return null;
+  const proj = cfg.projects[id];
+  if (!proj || !proj.local_path) return null;
+  return { id, localPath: proj.local_path };
+}
+
+async function handleRemember(input: {
+  case_id: string;
+  summary: string;
+  fingerprint?: string;
+  status?: string;
+  error_type?: string;
+  pr_url?: string;
+  watch_for?: string;
+  tags?: string[];
+  project_id?: string;
+}): Promise<ToolResult> {
+  if (!input.case_id || !input.summary) {
+    return {
+      error: {
+        code: "missing_input",
+        message: "case_id and summary are required",
+        next_action: "Pass both. Use agentry_get_case to find case_id; summary should describe what you learned.",
+      },
+    };
+  }
+  const cfg = loadConfig();
+  const resolved = resolveLocalPath(cfg, input.project_id);
+  if (!resolved) {
+    return {
+      error: {
+        code: "no_local_path",
+        message: "No local_path stored for this project — agentry_memory.md needs a local repo to write into.",
+        next_action: "Recreate the project with `local_path` set (the absolute path to the repo on disk), then retry.",
+      },
+    };
+  }
+  const filePath = getMemoryPath(resolved.localPath);
+  if (!filePath) {
+    return { error: { code: "no_path", message: "Could not resolve memory file path.", next_action: "Check local_path." } };
+  }
+  const action = upsertCaseSection(filePath, {
+    case_id: input.case_id,
+    summary: input.summary,
+    ...(input.fingerprint !== undefined ? { fingerprint: input.fingerprint } : {}),
+    ...(input.status !== undefined ? { status: input.status } : {}),
+    ...(input.error_type !== undefined ? { error_type: input.error_type } : {}),
+    ...(input.pr_url !== undefined ? { pr_url: input.pr_url } : {}),
+    ...(input.watch_for !== undefined ? { watch_for: input.watch_for } : {}),
+    ...(input.tags !== undefined ? { tags: input.tags } : {}),
+  });
+  return {
+    ok: true,
+    file_path: filePath,
+    action,
+    next_action:
+      "Memory updated. Future investigations can read this file directly (it's just markdown). " +
+      "Consider committing agentry_memory.md so the team and future agents see prior context.",
+  };
+}
+
+function handleRecall(input: { case_id?: string; project_id?: string }): ToolResult {
+  const cfg = loadConfig();
+  const resolved = resolveLocalPath(cfg, input.project_id);
+  if (!resolved) {
+    return {
+      error: {
+        code: "no_local_path",
+        message: "No local_path stored for this project.",
+        next_action: "Recreate the project with `local_path` set.",
+      },
+    };
+  }
+  const filePath = getMemoryPath(resolved.localPath)!;
+  if (!fs.existsSync(filePath)) {
+    return {
+      file_path: filePath,
+      content: null,
+      next_action: `No ${MEMORY_FILENAME} yet. Call agentry_remember after your next investigation to start the memory file.`,
+    };
+  }
+  if (input.case_id) {
+    const section = readCaseSection(filePath, input.case_id);
+    return {
+      file_path: filePath,
+      case_id: input.case_id,
+      content: section,
+      next_action: section
+        ? "Read the section before investigating — prior knowledge is in there."
+        : "No prior memory for this case_id. Investigate fresh and call agentry_remember when done.",
+    };
+  }
+  const content = fs.readFileSync(filePath, "utf8");
+  return {
+    file_path: filePath,
+    content,
+    next_action:
+      "Use this as context. For a specific case, pass case_id to filter. " +
+      "You can also Read/Grep this file directly with the agent's file tools.",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Project health + alerts
+// ---------------------------------------------------------------------------
+
+async function handleProjectHealth(projectId?: string): Promise<ToolResult> {
+  const cfg = loadConfig();
+  if (!cfg.api_key) return { error: { code: "no_key", message: "No API key.", next_action: "Call `agentry_login`." } };
+  const pid = projectId ?? cfg.default_project_id;
+  if (!pid) return { error: { code: "no_project", message: "No project specified.", next_action: "Pass project_id." } };
+  const resp = await api.getProjectHealth(cfg, pid);
+  return resp;
+}
+
+async function handleCreateAlert(input: {
+  name: string;
+  recipe_id: string;
+  threshold_column: string;
+  threshold_op: string;
+  threshold_value: number;
+  params: Record<string, unknown>;
+  description?: string;
+  webhook_id?: string;
+  project_id?: string;
+}): Promise<ToolResult> {
+  if (!input.name || !input.recipe_id || !input.threshold_column || !input.threshold_op || !Number.isFinite(input.threshold_value)) {
+    return {
+      error: {
+        code: "missing_input",
+        message: "name, recipe_id, threshold_column, threshold_op, threshold_value are required",
+        next_action: "Pass all five. Use agentry_list_recipes to find a recipe with the column you want to threshold.",
+      },
+    };
+  }
+  const cfg = loadConfig();
+  if (!cfg.api_key) return { error: { code: "no_key", message: "No API key.", next_action: "Call `agentry_login`." } };
+  const pid = input.project_id ?? cfg.default_project_id;
+  if (!pid) return { error: { code: "no_project", message: "No project specified.", next_action: "Pass project_id." } };
+  const body: Parameters<typeof api.createAlert>[2] = {
+    name: input.name,
+    recipe_id: input.recipe_id,
+    threshold_column: input.threshold_column,
+    threshold_op: input.threshold_op,
+    threshold_value: input.threshold_value,
+    params: input.params,
+  };
+  if (input.description) body.description = input.description;
+  if (input.webhook_id) body.webhook_id = input.webhook_id;
+  const resp = await api.createAlert(cfg, pid, body);
+  return {
+    ...resp,
+    project_id: pid,
+    next_action:
+      "Alert stored. Tell the user to call agentry_evaluate_alert from their cron / GitHub Actions / Cloudflare Cron " +
+      "(say every 5 minutes). When threshold crosses, agentry fires the linked webhook.",
+  };
+}
+
+async function handleListAlerts(projectId?: string): Promise<ToolResult> {
+  const cfg = loadConfig();
+  if (!cfg.api_key) return { error: { code: "no_key", message: "No API key.", next_action: "Call `agentry_login`." } };
+  const pid = projectId ?? cfg.default_project_id;
+  if (!pid) return { error: { code: "no_project", message: "No project specified.", next_action: "Pass project_id." } };
+  const resp = await api.listAlerts(cfg, pid);
+  return { project_id: pid, ...resp };
+}
+
+async function handleEvaluateAlert(input: { alert_id: string; project_id?: string }): Promise<ToolResult> {
+  if (!input.alert_id) {
+    return { error: { code: "missing_alert_id", message: "alert_id is required.", next_action: "Pass alert id from agentry_list_alerts." } };
+  }
+  const cfg = loadConfig();
+  if (!cfg.api_key) return { error: { code: "no_key", message: "No API key.", next_action: "Call `agentry_login`." } };
+  const pid = input.project_id ?? cfg.default_project_id;
+  if (!pid) return { error: { code: "no_project", message: "No project specified.", next_action: "Pass project_id." } };
+  const resp = await api.evaluateAlert(cfg, pid, input.alert_id);
+  return { project_id: pid, ...resp };
+}
+
+async function handleDeleteAlert(input: { alert_id: string; project_id?: string }): Promise<ToolResult> {
+  if (!input.alert_id) {
+    return { error: { code: "missing_alert_id", message: "alert_id is required.", next_action: "Pass alert id." } };
+  }
+  const cfg = loadConfig();
+  if (!cfg.api_key) return { error: { code: "no_key", message: "No API key.", next_action: "Call `agentry_login`." } };
+  const pid = input.project_id ?? cfg.default_project_id;
+  if (!pid) return { error: { code: "no_project", message: "No project specified.", next_action: "Pass project_id." } };
+  const resp = await api.deleteAlert(cfg, pid, input.alert_id);
+  return { ...resp, project_id: pid };
 }

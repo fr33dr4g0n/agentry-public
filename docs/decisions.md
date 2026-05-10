@@ -4,6 +4,24 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-10 — Memory + health + quotas + alerts (the "make it actually live in production" pass)
+
+Six new capabilities, ranked by leverage on agent workflows:
+
+**Breadcrumbs in case detail.** The schema already accepted them; nothing exposed them. `agentry_get_case` now returns `recent_events[].breadcrumbs` (and `request`, `tags`, `extra`). Half a day of work, biggest single quality-of-debug improvement.
+
+**Case search/filter.** Query params on the cases list endpoint: `q` (substring on error_type+message), `environment` (post-filter via events join), `deploy_sha` (exact), `since`/`until` (Unix seconds on lastSeenAt). Agent can answer "find all stripe-related cases in production this week" in one call.
+
+**Local memory file `agentry_memory.md`.** The agent's persistent memory for case investigations lives in a markdown file at `<local_path>/agentry_memory.md` in the customer's repo — NOT a server table. Each case gets a `## Case <id>` section the agent upserts via `agentry_remember`. Why local: grep-able with the agent's existing file tools, git-versionable (customer chooses commit vs ignore), survives server-side data loss, human-editable. The reframe: tacit knowledge about the codebase belongs in the codebase, not in a vendor's database. New tools: `agentry_remember`, `agentry_recall`.
+
+**Project health.** `GET /v1/projects/:id/health` returns `last_event_received_at`, `last_deploy_at`, `events_last_hour`, `open_cases`, `usage_this_month` (per-signal count + free-tier cap + pct), `webhooks` (per-hook last_status + last_error). Lets agents detect ingest gaps ("nothing received in 2h since the deploy — something broke") and approaching quota walls. New tool: `agentry_project_health`.
+
+**Usage counters.** New `usage_counters (project_id, period YYYY-MM, signal_type, count)` table. Best-effort upsert on every successful ingest in `ingest.ts`, `log.ts`, `track.ts`, `deploys.ts`. Free-tier caps live in code: 5K errors / 50K analytics / 500 deploys per month. Surfaces through `agentry_project_health`. Required before freemium can ship.
+
+**Alerts (customer-scheduled).** Store an alert definition: a recipe + parameters + threshold + linked webhook. agentry doesn't run a scheduler — the customer's cron / GitHub Actions / Cloudflare Cron POSTs `/alerts/:id/evaluate` when they want the check run. agentry runs the recipe, compares against threshold, fires the linked webhook on cross. Keeps agentry stateless and lets the customer own the schedule. v0 supports analytics-backend recipes only; cases-backend alerts deferred. Tools: `agentry_create_alert`, `agentry_list_alerts`, `agentry_evaluate_alert`, `agentry_delete_alert`.
+
+The MCP now has 34 tools. Each one continues to surface an explicit `next_action` so the agent doesn't need separate orchestration logic.
+
 ## 2026-05-10 — Webhooks for "do X automatically when Y happens"
 
 agentry now turns from a query surface into a programmable platform. Three events fire signed POSTs:

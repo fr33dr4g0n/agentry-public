@@ -5,6 +5,7 @@ import { projects } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey, requireProjectAccess } from "../middleware.js";
 import { forwardCapture, isPosthogConfigured, runHogQl } from "../posthog.js";
+import { incrementUsage } from "../usage.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -83,6 +84,7 @@ async function handleTrack(c: import("hono").Context<AppBindings>) {
     timestamp: typeof b.timestamp === "number" ? b.timestamp : undefined,
   });
 
+  if (result.status < 400) await incrementUsage(c.env, projectId, "analytics");
   if (result.status >= 400) {
     return c.json(
       {

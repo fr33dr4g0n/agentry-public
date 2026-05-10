@@ -5,6 +5,7 @@ import { deploys, projects } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey, requireProjectAccess } from "../middleware.js";
 import { fireWebhooks } from "../webhooks.js";
+import { incrementUsage } from "../usage.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -100,6 +101,7 @@ async function handleDeployIngest(c: Parameters<typeof router.post>[1] extends i
   await db.insert(deploys).values({
     id, projectId, sha, branch, environment, message, url, actor, receivedAt: now,
   });
+  await incrementUsage(c.env, projectId, "deploys");
 
   const waitUntil = (p: Promise<unknown>) =>
     c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});

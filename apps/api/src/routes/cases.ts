@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, like, lte, or, sql } from "drizzle-orm";
 import {
   RecordAgentRunRequestSchema,
   UpdateCaseRequestSchema,
@@ -62,17 +62,48 @@ projectScopedCases.get("/projects/:project_id/cases", async (c) => {
     }
   }
 
-  const db = getDb(c.env);
-  const where = status
-    ? and(eq(cases.projectId, projectId), eq(cases.status, status))
-    : eq(cases.projectId, projectId);
+  // Optional filters
+  const text = c.req.query("q");                    // substring on error_type or message
+  const environment = c.req.query("environment");    // exact match on env (looks up via events join — for v0 we just filter cases by lastDeploySha equality if 'env')
+  const deploySha = c.req.query("deploy_sha");       // exact match on cases.lastDeploySha
+  const since = parseInt(c.req.query("since") ?? "0", 10);
+  const until = parseInt(c.req.query("until") ?? "0", 10);
 
-  const rows = await db
+  const conds = [eq(cases.projectId, projectId)];
+  if (status) conds.push(eq(cases.status, status));
+  if (text && text.length > 0 && text.length <= 200) {
+    const pat = `%${text.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+    conds.push(or(like(cases.errorType, pat), like(cases.message, pat)) as typeof conds[number]);
+  }
+  if (deploySha && deploySha.length > 0 && deploySha.length <= 200) {
+    conds.push(eq(cases.lastDeploySha, deploySha));
+  }
+  if (Number.isFinite(since) && since > 0) conds.push(gte(cases.lastSeenAt, since));
+  if (Number.isFinite(until) && until > 0) conds.push(lte(cases.lastSeenAt, until));
+
+  const db = getDb(c.env);
+  let rows = await db
     .select()
     .from(cases)
-    .where(where)
+    .where(and(...conds))
     .orderBy(desc(cases.lastSeenAt))
     .limit(limit);
+
+  // environment filter requires an events join; do it as a post-filter for v0
+  // (rare query, keeps the SQL composer simple). We grab the most recent event's
+  // environment per fingerprint and filter rows by match.
+  if (environment && environment.length > 0 && environment.length <= 100 && rows.length > 0) {
+    const fingerprints = rows.map((r) => r.fingerprint);
+    const envRows = await db.all<{ fingerprint: string; environment: string | null }>(sql`
+      SELECT fingerprint, environment FROM events
+      WHERE project_id = ${projectId}
+        AND environment = ${environment}
+        AND fingerprint IN (${sql.join(fingerprints.map((f) => sql`${f}`), sql`, `)})
+      GROUP BY fingerprint
+    `);
+    const allowed = new Set(envRows.map((r) => r.fingerprint));
+    rows = rows.filter((r) => allowed.has(r.fingerprint));
+  }
 
   return c.json({
     cases: rows.map((r) => ({
@@ -105,7 +136,7 @@ caseRouter.get("/:case_id", async (c) => {
 
   const db = getDb(c.env);
 
-  const recentEvents = await db
+  const recentEventRows = await db
     .select()
     .from(events)
     .where(
@@ -116,6 +147,21 @@ caseRouter.get("/:case_id", async (c) => {
     )
     .orderBy(desc(events.receivedAt))
     .limit(5);
+
+  // Surface breadcrumbs — they're the "what was happening 30s before" context
+  // that turns guessing into diagnosis. Stored as JSON in events.breadcrumbsJson.
+  const recentEvents = recentEventRows.map((e) => ({
+    id: e.id,
+    received_at: e.receivedAt,
+    deploy_sha: e.deploySha,
+    environment: e.environment,
+    message: e.message,
+    stack: safeJsonArray<StackFrame>(e.stack),
+    breadcrumbs: safeJsonObj(e.breadcrumbsJson),
+    request: safeJsonObj(e.requestJson),
+    tags: safeJsonObj(e.tagsJson),
+    extra: safeJsonObj(e.extraJson),
+  }));
 
   const allSuppressions = await db
     .select()
@@ -143,14 +189,7 @@ caseRouter.get("/:case_id", async (c) => {
     agent_summary: row.agentSummary,
     pr_url: row.prUrl,
     local_path: project.localPath,
-    recent_events: recentEvents.map((e) => ({
-      id: e.id,
-      received_at: e.receivedAt,
-      deploy_sha: e.deploySha,
-      environment: e.environment,
-      message: e.message,
-      stack: safeJsonArray<StackFrame>(e.stack),
-    })),
+    recent_events: recentEvents,
     suppression_hints: matchingSuppressions.map((s) => ({
       id: s.id,
       action: s.action,
@@ -295,6 +334,15 @@ function safeJsonArray<T>(s: string | null | undefined): T[] {
     return Array.isArray(v) ? (v as T[]) : [];
   } catch {
     return [];
+  }
+}
+
+function safeJsonObj(s: string | null | undefined): unknown {
+  if (!s) return null;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
   }
 }
 

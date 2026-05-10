@@ -4,6 +4,8 @@
 import { createClient } from "@libsql/client";
 
 const DROP_STATEMENTS: string[] = [
+  "DROP TABLE IF EXISTS alerts",
+  "DROP TABLE IF EXISTS usage_counters",
   "DROP TABLE IF EXISTS webhooks",
   "DROP TABLE IF EXISTS posthog_projects",
   "DROP TABLE IF EXISTS deploys",
@@ -160,6 +162,35 @@ const STATEMENTS: string[] = [
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
   )`,
   `CREATE INDEX webhooks_proj_idx ON webhooks (project_id, active)`,
+
+  `CREATE TABLE usage_counters (
+    project_id text NOT NULL,
+    period text NOT NULL,
+    signal_type text NOT NULL,
+    count integer DEFAULT 0 NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
+  )`,
+  `CREATE UNIQUE INDEX usage_counters_pk ON usage_counters (project_id, period, signal_type)`,
+
+  `CREATE TABLE alerts (
+    id text PRIMARY KEY NOT NULL,
+    project_id text NOT NULL,
+    name text NOT NULL,
+    description text,
+    recipe_id text NOT NULL,
+    params_json text DEFAULT '{}' NOT NULL,
+    threshold_column text NOT NULL,
+    threshold_op text NOT NULL,
+    threshold_value text NOT NULL,
+    webhook_id text,
+    active integer DEFAULT 1 NOT NULL,
+    created_at integer DEFAULT (unixepoch()) NOT NULL,
+    last_evaluated_at integer,
+    last_triggered_at integer,
+    last_value text,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
+  )`,
+  `CREATE INDEX alerts_proj_idx ON alerts (project_id, active)`,
 ];
 
 async function main() {

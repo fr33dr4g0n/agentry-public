@@ -13,6 +13,8 @@ import logRoutes from "./routes/log.js";
 import recipeRoutes from "./routes/recipes.js";
 import nextStepsRoutes from "./routes/next-steps.js";
 import webhookRoutes from "./routes/webhooks.js";
+import healthRoutes from "./routes/health.js";
+import alertRoutes from "./routes/alerts.js";
 import type { AppBindings, Env } from "./env.js";
 
 export function createApp() {
@@ -157,6 +159,12 @@ export function createApp() {
 
   // Webhook subscriptions (signed POST delivery on case.created / case.resolved / deploy.recorded).
   app.route("/", webhookRoutes);
+
+  // Project health (last_event_at, usage, webhook health).
+  app.route("/", healthRoutes);
+
+  // Alerts (stored definitions; customer's cron POSTs /evaluate).
+  app.route("/", alertRoutes);
 
   return app;
 }

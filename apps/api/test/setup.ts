@@ -154,6 +154,31 @@ export async function makeTestEnv(opts?: {
         last_error text
       )`,
       `CREATE INDEX webhooks_proj_idx ON webhooks (project_id, active)`,
+      `CREATE TABLE usage_counters (
+        project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        period text NOT NULL,
+        signal_type text NOT NULL,
+        count integer NOT NULL DEFAULT 0
+      )`,
+      `CREATE UNIQUE INDEX usage_counters_pk ON usage_counters (project_id, period, signal_type)`,
+      `CREATE TABLE alerts (
+        id text PRIMARY KEY,
+        project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name text NOT NULL,
+        description text,
+        recipe_id text NOT NULL,
+        params_json text NOT NULL DEFAULT '{}',
+        threshold_column text NOT NULL,
+        threshold_op text NOT NULL,
+        threshold_value text NOT NULL,
+        webhook_id text,
+        active integer NOT NULL DEFAULT 1,
+        created_at integer NOT NULL DEFAULT (unixepoch()),
+        last_evaluated_at integer,
+        last_triggered_at integer,
+        last_value text
+      )`,
+      `CREATE INDEX alerts_proj_idx ON alerts (project_id, active)`,
     ],
     "write",
   );

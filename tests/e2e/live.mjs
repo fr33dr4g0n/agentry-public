@@ -337,6 +337,66 @@ async function main() {
     expect([401, 403, 404].includes(r.status), true, `user B listing user A's cases -> 4xx (got ${r.status})`);
   }
 
+  // 7.25 Project health
+  console.log("\n[project health]");
+  {
+    const r = await http("GET", `/v1/projects/${projId}/health`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+    });
+    expect(r.status, 200, "GET /health 200");
+    if (typeof r.json?.last_event_received_at === "number" && r.json.last_event_received_at > 0)
+      ok("last_event_received_at populated");
+    else bad("last_event_received_at missing", r.json);
+    if (r.json?.usage_this_month?.errors?.cap === 5000) ok("free-tier caps surfaced");
+    else bad("caps missing", r.json?.usage_this_month);
+    if (typeof r.json?.events_last_hour === "number") ok(`events_last_hour=${r.json.events_last_hour}`);
+    else bad("events_last_hour missing", r.json);
+  }
+
+  // 7.27 Case search/filter
+  console.log("\n[case search]");
+  {
+    // Filter by deploy_sha (we set last_deploy_sha when ingesting earlier)
+    const r = await http("GET", `/v1/projects/${projId}/cases?status=open&q=Type`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+    });
+    expect(r.status, 200, "filter by q 200");
+    if (Array.isArray(r.json?.cases)) ok(`q=Type matched ${r.json.cases.length} cases`);
+    else bad("filter q broken", r.json);
+  }
+  {
+    const r = await http("GET", `/v1/projects/${projId}/cases?since=1`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+    });
+    expect(r.status, 200, "filter by since 200");
+  }
+
+  // 7.28 Breadcrumbs in case detail
+  console.log("\n[breadcrumbs]");
+  {
+    // Ingest an event with breadcrumbs
+    const ev = {
+      exception: { values: [{ type: "BreadcrumbError", value: "with crumbs",
+        stacktrace: { frames: [{ filename: "src/breadcrumb.ts", function: "fn", lineno: 1 }] } }] },
+      breadcrumbs: { values: [
+        { ts: 1, type: "click", message: "Sign up clicked" },
+        { ts: 2, type: "navigation", message: "/checkout" },
+      ] },
+    };
+    const ing = await http("POST", `/v1/store/${projId}/`, {
+      headers: { authorization: `Bearer ${projDsn}` },
+      body: ev,
+    });
+    expect(ing.status, 200, "ingest with breadcrumbs 200");
+    const detail = await http("GET", `/v1/cases/${ing.json.case_id}`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+    });
+    expect(detail.status, 200, "get case 200");
+    const re = detail.json?.recent_events?.[0];
+    if (re?.breadcrumbs?.values?.length === 2) ok("breadcrumbs surfaced in case detail");
+    else bad("breadcrumbs missing or wrong shape", re);
+  }
+
   // 7.3 Webhooks — register + fire-on-case-create + list + delete
   console.log("\n[webhooks]");
   // Spin up a tiny in-process receiver to verify signed delivery.

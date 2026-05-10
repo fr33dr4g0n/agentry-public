@@ -406,6 +406,47 @@ export const api = {
       return res.text();
     });
   },
+  // Project health
+  getProjectHealth(cfg: AgentryConfig, projectId: string): Promise<Record<string, unknown>> {
+    return apiFetch(cfg, `/v1/projects/${encodeURIComponent(projectId)}/health`);
+  },
+  // Alerts
+  createAlert(
+    cfg: AgentryConfig,
+    projectId: string,
+    body: {
+      name: string;
+      recipe_id: string;
+      threshold_column: string;
+      threshold_op: string;
+      threshold_value: number | string;
+      params?: Record<string, unknown>;
+      description?: string;
+      webhook_id?: string;
+    },
+  ): Promise<{ id: string; name: string; recipe_id: string }> {
+    return apiFetch(cfg, `/v1/projects/${encodeURIComponent(projectId)}/alerts`, {
+      method: "POST",
+      body,
+    });
+  },
+  listAlerts(cfg: AgentryConfig, projectId: string): Promise<{ alerts: Array<Record<string, unknown>> }> {
+    return apiFetch(cfg, `/v1/projects/${encodeURIComponent(projectId)}/alerts`);
+  },
+  deleteAlert(cfg: AgentryConfig, projectId: string, id: string): Promise<{ ok: boolean }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/alerts/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+  },
+  evaluateAlert(cfg: AgentryConfig, projectId: string, id: string): Promise<Record<string, unknown>> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/alerts/${encodeURIComponent(id)}/evaluate`,
+      { method: "POST", body: {} },
+    );
+  },
 };
 
 export interface InstallGuideStep {

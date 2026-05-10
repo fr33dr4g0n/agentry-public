@@ -26,6 +26,7 @@ import { getDb } from "../db.js";
 import { matchesPattern } from "./cases.js";
 import { forwardCapture, isPosthogConfigured } from "../posthog.js";
 import { fireWebhooks } from "../webhooks.js";
+import { incrementUsage } from "../usage.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -94,10 +95,10 @@ async function handleLog(c: Context<AppBindings>) {
     return await handleDeploySignal(c, projectId, body);
   }
   if (detected === "event") {
-    return await handleEventSignal(c, proj.userId, body);
+    return await handleEventSignal(c, projectId, proj.userId, body);
   }
   // "log" — generic. Funnel into analytics with event_name="log" so it lands somewhere queryable.
-  return await handleEventSignal(c, proj.userId, {
+  return await handleEventSignal(c, projectId, proj.userId, {
     ...(body as Record<string, unknown>),
     event: "log",
   });
@@ -259,6 +260,8 @@ async function handleErrorSignal(
     });
   }
 
+  await incrementUsage(c.env, projectId, "errors");
+
   if (isNewCase) {
     const waitUntil = (p: Promise<unknown>) =>
       c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
@@ -307,6 +310,7 @@ async function handleDeploySignal(
   await db.insert(deploys).values({
     id, projectId, sha, branch, environment, message, url, actor, receivedAt: now,
   });
+  await incrementUsage(c.env, projectId, "deploys");
 
   const waitUntil = (p: Promise<unknown>) =>
     c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
@@ -330,6 +334,7 @@ async function handleDeploySignal(
 
 async function handleEventSignal(
   c: Context<AppBindings>,
+  projectId: string,
   userId: string,
   rawBody: unknown,
 ) {
@@ -364,6 +369,7 @@ async function handleEventSignal(
     timestamp: typeof b.timestamp === "number" ? b.timestamp : undefined,
   });
 
+  if (result.status < 400) await incrementUsage(c.env, projectId, "analytics");
   if (result.status >= 400) {
     return c.json(
       {

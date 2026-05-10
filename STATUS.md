@@ -1,7 +1,7 @@
 # Agentry — Build Status
 
-**Last updated:** 2026-05-10 (webhooks for "do X automatically when Y happens")
-**Phase:** ✅ v0 working end-to-end with capture (server + client + any language) + agent-driven query (no dashboard) + post-install next-step menu + **signed webhooks** for automation (auto-fix-on-error, deploy regression alerts, weekly digests). PostHog gated on env vars.
+**Last updated:** 2026-05-10 (memory loop + project health + quotas + alerts)
+**Phase:** ✅ v0 with capture (server + client + any language) + agent-driven query + post-install menu + signed webhooks + **persistent agent memory** (`agentry_memory.md`) + **project health/quotas** + **threshold alerts** (customer-scheduled). PostHog gated on env vars.
 
 ## Quickstart for the human (you, when you're back)
 
