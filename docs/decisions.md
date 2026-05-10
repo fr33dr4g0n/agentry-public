@@ -4,6 +4,21 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-10 — Browser SDK + CORS
+
+Shipped `@agentry/browser` and CORS on the ingest endpoints. The product now captures from both server and client surfaces.
+
+- **Browser SDK** is its own package (not a conditional export of `@agentry/node`) because the runtime APIs and bundling concerns are too different. Pure ESM, zero deps.
+- **Auto-wires** `window.error` and `window.unhandledrejection` by default (`autoCaptureGlobalErrors: false` to opt out — useful when wrapping with a custom error boundary).
+- **Stable analytics distinct_id** persisted to `localStorage`. Without this, every page reload would create a new "user" in PostHog.
+- **`flushBeacon()`** uses `navigator.sendBeacon` so queued events survive page unload (fetch is cancelled on navigation; sendBeacon isn't). Auto-fires on `visibilitychange='hidden'`.
+- **Multi-format stack parsing** — Chrome (V8) and Safari/Firefox emit different formats; both are parsed and normalized.
+- **DSN in client bundles is fine** — it's an ingest-only public token. Documented in the install guide pitfalls so the agent doesn't waste time worrying about it.
+
+CORS is permissive (`*`) on `/v1/store/*`, `/v1/track/*`, `/v1/deploys/*` and absent on auth/projects/cases/management endpoints. The DSN is meant for browsers; the API key never is.
+
+`agentry_install_guide` now takes one of six framework targets: `node`, `next`, `express`, `browser`, `react`, `next-client`. Most apps need two install passes (one server, one client). `agentry_verify_install` is the same end-to-end canary.
+
 ## 2026-05-10 — Three signal types: errors, analytics, deploys + comprehensive install
 
 Agentry now consumes three signal streams, all routing into the same case-investigation loop:

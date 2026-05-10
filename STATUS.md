@@ -1,7 +1,7 @@
 # Agentry — Build Status
 
-**Last updated:** 2026-05-10 (signal-types expansion — analytics, deploys, install guide)
-**Phase:** ✅ v0 working end-to-end with errors + analytics + deploys + comprehensive install. PostHog gated on env vars; activates the moment you bring the box up.
+**Last updated:** 2026-05-10 (browser SDK + CORS landed)
+**Phase:** ✅ v0 working end-to-end with **server + client** signal capture. PostHog gated on env vars; activates the moment you bring the Hetzner box up.
 
 ## Quickstart for the human (you, when you're back)
 
@@ -58,12 +58,13 @@ AGENTRY_SERVER_URL=https://agentry-api.<your-subdomain>.workers.dev claude mcp a
 
 ## What got built
 
-- **Cloudflare Workers API** (Hono + Drizzle + Turso): GitHub-OAuth-device-flow auth, projects, cases, errors ingest (Sentry-protocol), **deploys ingest**, **analytics ingest (PostHog passthrough)**, suppressions, **comprehensive install guide endpoint**, discovery (`llms.txt`).
-- **Turso schema** — 9 tables (added `deploys`, `posthog_projects`).
-- **Node SDK** `@agentry/node` — `init()`, `capture()`, **`track()`**, **`deploy()`**, `flush()`, `close()`. Handles Error / non-Error / null / string / huge stacks / async stacks.
-- **MCP server** `@agentry/mcp` — **18 tools**, including `agentry_install_guide` (framework-aware checklist) and `agentry_verify_install` (canary check that fires synthetic error + analytics + deploy events and reports which signals reached agentry).
-- **PostHog multi-tenant integration** — auto-provisions one PostHog project per agentry user (gated on POSTHOG_HOST + POSTHOG_ORG_ID + POSTHOG_MASTER_API_KEY + AGENTRY_TOKEN_ENC_KEY env vars; activates without code changes once you set them).
-- **Tests**: 100 unit + integration tests, all green. 77 live e2e tests against `wrangler dev` + real Turso, all green. Dogfood test (errors + deploys round-trip) passes.
+- **Cloudflare Workers API** (Hono + Drizzle + Turso): GitHub-OAuth-device-flow auth, projects, cases, errors ingest (Sentry-protocol), deploys ingest, analytics ingest (PostHog passthrough), suppressions, comprehensive install guide endpoint, discovery (`llms.txt`). **CORS enabled on /v1/store/*, /v1/track/*, /v1/deploys/* for browser SDK access** (DSN-authenticated, ACAO=*, preflight cached 24h). Other endpoints intentionally reject browser origins.
+- **Turso schema** — 9 tables (`users`, `api_keys`, `projects`, `events`, `cases`, `agent_runs`, `suppression_entries`, `deploys`, `posthog_projects`).
+- **Node SDK** `@agentry/node` — `init()`, `capture()`, `track()`, `deploy()`, `flush()`, `close()`. Server-side: Node 18+, Bun, Workers (with care).
+- **Browser SDK** `@agentry/browser` — `init()`, `capture()`, `track()`, `flush()`, `flushBeacon()`, `close()`. Auto-wires `window.error` + `window.unhandledrejection` listeners. Multi-format stack parser (V8 / Safari / Firefox). Persists `distinct_id` to `localStorage` for stable analytics. Uses `navigator.sendBeacon` on `visibilitychange='hidden'` so events survive page unload. Pure ESM, zero runtime deps.
+- **MCP server** `@agentry/mcp` — 18 tools. `agentry_install_guide` is framework-aware: `node` / `next` / `express` for server, `browser` / `react` / `next-client` for client. `agentry_verify_install` confirms each signal type actually reached agentry.
+- **PostHog multi-tenant integration** — auto-provisions one PostHog project per agentry user (gated on `POSTHOG_HOST` + `POSTHOG_ORG_ID` + `POSTHOG_MASTER_API_KEY` + `AGENTRY_TOKEN_ENC_KEY` env vars; activates without code changes once you set them).
+- **Tests**: 121 unit + integration green (40 API, 11 MCP, 17 browser SDK, 25 Node SDK, 28 shared). 89 live e2e green (errors, analytics, deploys, install guide for both server and client targets, CORS preflights, browser-origin POSTs). Dogfood passes end-to-end.
 
 ```
 agentry/
@@ -81,6 +82,24 @@ agentry/
 ├── CLAUDE.md                 Repo instructions for future Claude sessions
 └── docs/decisions.md         Append-only log of design decisions
 ```
+
+## Server vs client install (the agent's mental model)
+
+Most apps need **two install passes** — one for the server, one for the client. The MCP makes this explicit:
+
+```
+Backend (Express / Next.js server / Bun):
+  agentry_install_guide(framework: "node" | "express" | "next")
+    → installs @agentry/node, sets up uncaughtException/unhandledRejection,
+      Express middleware, deploy events from CI
+
+Frontend (React SPA / Next.js client / vanilla):
+  agentry_install_guide(framework: "react" | "next-client" | "browser")
+    → installs @agentry/browser, sets up window error listeners,
+      ErrorBoundary, page_view tracking, key action tracking
+```
+
+The agent should detect both surfaces in the customer's repo (a typical Next.js app has both) and run through both guides. Then `agentry_verify_install` confirms signals from both ends reached agentry.
 
 ## What works (verified end-to-end)
 

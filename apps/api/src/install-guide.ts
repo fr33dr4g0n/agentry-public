@@ -3,7 +3,20 @@
 // reads it, plans which steps apply to the user's codebase, executes them,
 // then calls agentry_verify_install at the end.
 
-export type Framework = "node" | "next" | "express";
+export type Framework =
+  | "node"
+  | "next"
+  | "express"
+  | "browser"
+  | "react"
+  | "next-client";
+
+export const SERVER_FRAMEWORKS: Framework[] = ["node", "next", "express"];
+export const CLIENT_FRAMEWORKS: Framework[] = ["browser", "react", "next-client"];
+
+export function isClientFramework(f: Framework): boolean {
+  return CLIENT_FRAMEWORKS.includes(f);
+}
 
 export interface InstallGuideStep {
   id: string;
@@ -40,25 +53,217 @@ const COMMON_PITFALLS = [
   "Track analytics events from the SERVER once the action completes, not from the browser before submission. Browser-only tracking misses ~30% of events to ad-blockers.",
 ];
 
-function commonSteps(): InstallGuideStep[] {
+function commonSteps(framework: Framework): InstallGuideStep[] {
+  const isClient = isClientFramework(framework);
   return [
     {
       id: "install_sdk",
-      title: "Install the @agentry/node SDK",
+      title: isClient
+        ? "Install the @agentry/browser SDK"
+        : "Install the @agentry/node SDK",
       why: "Required for any error, analytics, or deploy capture.",
       action: "run",
-      command: "npm install @agentry/node",
-      validate: "package.json should list @agentry/node as a dependency.",
+      command: isClient ? "npm install @agentry/browser" : "npm install @agentry/node",
+      validate: isClient
+        ? "package.json should list @agentry/browser as a dependency."
+        : "package.json should list @agentry/node as a dependency.",
     },
     {
       id: "set_env_vars",
-      title: "Set AGENTRY_DSN and GIT_SHA in the runtime environment",
-      why: "DSN authenticates the SDK to agentry. GIT_SHA links each event to the deploy that emitted it.",
+      title: isClient
+        ? "Expose AGENTRY_DSN to the client bundle (build-time injection)"
+        : "Set AGENTRY_DSN and GIT_SHA in the runtime environment",
+      why: isClient
+        ? "DSN authenticates the SDK to agentry. It must be injected at build time " +
+          "(e.g. NEXT_PUBLIC_AGENTRY_DSN, import.meta.env.VITE_AGENTRY_DSN, REACT_APP_AGENTRY_DSN). " +
+          "Yes the DSN appears in the bundle — that's intentional. It only grants ingest, never reads."
+        : "DSN authenticates the SDK to agentry. GIT_SHA links each event to the deploy that emitted it.",
       action: "manual",
-      file_hint: "Set in .env / Vercel env / Railway env / docker-compose / wherever your app reads env from at runtime.",
-      validate:
-        "process.env.AGENTRY_DSN should be defined inside the running app. " +
-        "GIT_SHA should be the actual current git SHA (in CI: $(git rev-parse HEAD); on Vercel: VERCEL_GIT_COMMIT_SHA).",
+      file_hint: isClient
+        ? "Vercel env / Vite .env / Webpack DefinePlugin / Next.js env settings — " +
+          "use the framework's standard PUBLIC_ prefix for client-exposed vars."
+        : "Set in .env / Vercel env / Railway env / docker-compose / wherever your app reads env from at runtime.",
+      validate: isClient
+        ? "After build, grep your client bundle for the DSN — it should be present (it's a public token, not a secret)."
+        : "process.env.AGENTRY_DSN should be defined inside the running app. " +
+          "GIT_SHA should be the actual current git SHA (in CI: $(git rev-parse HEAD); on Vercel: VERCEL_GIT_COMMIT_SHA).",
+    },
+  ];
+}
+
+function clientErrorCaptureSteps(framework: Framework): InstallGuideStep[] {
+  const initSnippet =
+    framework === "react"
+      ? `// src/agentry.ts (or wherever your app boots)
+import { agentry } from "@agentry/browser";
+
+agentry.init({
+  dsn: import.meta.env.VITE_AGENTRY_DSN ?? process.env.REACT_APP_AGENTRY_DSN!,
+  environment: import.meta.env.MODE ?? "production",
+  // autoCaptureGlobalErrors defaults to true — listens to window 'error' and 'unhandledrejection'.
+});
+
+// Then import this file once at the top of src/main.tsx (or src/index.tsx).`
+      : framework === "next-client"
+      ? `// app/agentry.client.ts
+"use client";
+import { agentry } from "@agentry/browser";
+
+if (typeof window !== "undefined") {
+  agentry.init({
+    dsn: process.env.NEXT_PUBLIC_AGENTRY_DSN!,
+    environment: process.env.NODE_ENV,
+  });
+}
+
+// In app/layout.tsx, add: import "./agentry.client";`
+      : `// near the top of your client entrypoint
+import { agentry } from "@agentry/browser";
+
+agentry.init({
+  dsn: window.AGENTRY_DSN ?? process.env.AGENTRY_DSN!,
+  environment: process.env.NODE_ENV,
+});`;
+
+  const steps: InstallGuideStep[] = [
+    {
+      id: "init_at_entrypoint",
+      title: "Initialize agentry as the FIRST thing the client bundle runs",
+      why:
+        "agentry must be initialized before any code that might throw, including framework boot. " +
+        "Once init() is called, window 'error' and 'unhandledrejection' listeners attach automatically " +
+        "(autoCaptureGlobalErrors defaults to true).",
+      action: "edit",
+      file_hint:
+        framework === "react"
+          ? "Create src/agentry.ts and import it FIRST from src/main.tsx (before app render)."
+          : framework === "next-client"
+          ? "Create app/agentry.client.ts as a `'use client'` module and import it from app/layout.tsx (server component is fine — Next will hoist the import)."
+          : "Top of your client entrypoint, BEFORE the rest of your app boots.",
+      code: initSnippet,
+      validate: "grep for `agentry.init(` in the client entrypoint. Must run before any other component code.",
+    },
+  ];
+
+  if (framework === "react" || framework === "next-client") {
+    steps.push({
+      id: "react_error_boundary",
+      title: "Capture React render errors via an ErrorBoundary",
+      why:
+        "window 'error' doesn't catch errors thrown during React render — only ErrorBoundary does. " +
+        "Without this, every render-time bug vanishes from agentry.",
+      action: "edit",
+      file_hint:
+        framework === "react"
+          ? "Create src/components/AgentryErrorBoundary.tsx and wrap your <App /> with it."
+          : "app/error.tsx and app/global-error.tsx (Next App Router). Both are auto-wired by Next.",
+      code:
+        framework === "react"
+          ? `"use client";
+import { Component, type ReactNode } from "react";
+import { agentry } from "@agentry/browser";
+
+export class AgentryErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: { componentStack?: string }) {
+    agentry.capture(error, {
+      tags: { source: "react_error_boundary" },
+      extra: { componentStack: info.componentStack },
+    });
+  }
+  render() {
+    if (this.state.error) return <h2>Something broke. The team's been notified.</h2>;
+    return this.props.children;
+  }
+}
+
+// Use in src/main.tsx:
+// <AgentryErrorBoundary><App /></AgentryErrorBoundary>`
+          : `"use client";
+// app/error.tsx
+import { useEffect } from "react";
+import { agentry } from "@agentry/browser";
+
+export default function Error({ error, reset }: { error: Error; reset: () => void }) {
+  useEffect(() => {
+    agentry.capture(error, { tags: { source: "next_error_boundary" } });
+  }, [error]);
+  return (<div><h2>Something broke.</h2><button onClick={reset}>Try again</button></div>);
+}
+
+// Same shape for app/global-error.tsx — that one wraps the whole tree.`,
+      validate: "Throw inside a component render in dev. Boundary should render and a case appear in agentry_list_cases.",
+    });
+  }
+
+  return steps;
+}
+
+function clientAnalyticsSteps(framework: Framework): InstallGuideStep[] {
+  return [
+    {
+      id: "track_page_view",
+      title: "Track page_view on every route change",
+      why:
+        "Funnels start with traffic. Without page_view events, retention curves and funnel widths are guesses.",
+      action: "edit",
+      file_hint:
+        framework === "react"
+          ? "Listen on react-router or wouter route changes (or just call agentry.track on initial load if SPA)."
+          : framework === "next-client"
+          ? "app/agentry-router-tracker.tsx — a 'use client' component using usePathname() + useEffect to fire on path change."
+          : "On every route change in your client router. For static sites, fire once per page load.",
+      code:
+        framework === "next-client"
+          ? `"use client";
+import { useEffect } from "react";
+import { usePathname } from "next/navigation";
+import { agentry } from "@agentry/browser";
+
+export function AgentryRouterTracker() {
+  const pathname = usePathname();
+  useEffect(() => {
+    agentry.track("page_view", { properties: { path: pathname } });
+  }, [pathname]);
+  return null;
+}
+
+// Mount once in app/layout.tsx alongside agentry.client import.`
+          : `import { useEffect } from "react";
+import { useLocation } from "react-router-dom";
+import { agentry } from "@agentry/browser";
+
+export function PageViewTracker() {
+  const loc = useLocation();
+  useEffect(() => { agentry.track("page_view", { properties: { path: loc.pathname } }); }, [loc.pathname]);
+  return null;
+}`,
+      validate: "Navigate between two routes. Two page_view events should appear in PostHog within ~10 seconds.",
+    },
+    {
+      id: "track_key_actions_client",
+      title: "Track 2-3 key product actions from the client (the funnel signals)",
+      why:
+        "Server-side analytics misses ~30% of events to ad-blockers and pre-submission flows. Track the user-action events from the browser at the actual moment of the action. " +
+        "Track the SERVER side too for the same actions (double-fire) when the action persists data — server is authoritative, client gives you the funnel.",
+      action: "edit",
+      file_hint:
+        "onClick / onSubmit handlers for the meaningful user actions: 'cta_clicked', 'signup_form_submitted', 'video_played', 'paywall_viewed'.",
+      code: `import { agentry } from "@agentry/browser";
+
+// In a button onClick:
+<button onClick={() => {
+  agentry.track("cta_clicked", { properties: { cta_id: "hero_signup", page: window.location.pathname } });
+  // ... the actual navigation
+}}>Sign up</button>
+
+// Form submission:
+async function handleSubmit(form: FormData) {
+  agentry.track("signup_form_submitted", { properties: { form_variant: "v2" } });
+  // ... call your server action
+}`,
+      validate: "Click each tracked control once. Events should appear in PostHog (cross-check with agentry_analytics_query).",
     },
   ];
 }
@@ -263,19 +468,35 @@ function verifySteps(): InstallGuideStep[] {
 
 export function buildInstallGuide(framework: Framework, signalTypes: string[]): InstallGuide {
   const wantedSet = new Set(signalTypes.length ? signalTypes : ["errors", "analytics", "deploys"]);
-  const steps: InstallGuideStep[] = [...commonSteps()];
+  const steps: InstallGuideStep[] = [...commonSteps(framework)];
+  const isClient = isClientFramework(framework);
 
-  if (wantedSet.has("errors")) steps.push(...errorCaptureSteps(framework));
-  if (wantedSet.has("analytics")) steps.push(...analyticsSteps(framework));
-  if (wantedSet.has("deploys")) steps.push(...deploySteps(framework));
+  if (wantedSet.has("errors")) {
+    steps.push(...(isClient ? clientErrorCaptureSteps(framework) : errorCaptureSteps(framework)));
+  }
+  if (wantedSet.has("analytics")) {
+    steps.push(...(isClient ? clientAnalyticsSteps(framework) : analyticsSteps(framework)));
+  }
+  // Deploy events are CI-side, never client-side.
+  if (wantedSet.has("deploys") && !isClient) steps.push(...deploySteps(framework));
 
   steps.push(...verifySteps());
+
+  const pitfalls = isClient
+    ? [
+        "DSNs in client bundles are public tokens, not secrets — they only grant ingest. Don't be alarmed when you see yours in DevTools.",
+        "Don't init agentry in server-only files of a Next.js app — use the @agentry/node SDK there. The browser SDK has no Node primitives.",
+        "Source maps: in production builds, stack traces will reference minified filenames. Source-map upload is a v0.x feature; for now, agents can still match by error message + URL.",
+        "Don't track sensitive form values in event properties. Track that the action happened, not what was entered.",
+        "On mobile Safari, fetch may fail silently during page transitions. The SDK falls back to navigator.sendBeacon on visibilitychange='hidden'.",
+      ]
+    : COMMON_PITFALLS;
 
   return {
     framework,
     signal_types: [...wantedSet],
     steps,
-    pitfalls: COMMON_PITFALLS,
+    pitfalls,
     signal_health_principles: SIGNAL_HEALTH_PRINCIPLES,
     next_action:
       "Read each step in order. For 'edit' steps, find the file matching `file_hint` and apply `code`. " +
@@ -287,5 +508,8 @@ export function detectFramework(s: string | undefined | null): Framework {
   const v = (s ?? "").toLowerCase().trim();
   if (v === "next" || v === "nextjs" || v === "next.js") return "next";
   if (v === "express") return "express";
+  if (v === "browser" || v === "vanilla") return "browser";
+  if (v === "react" || v === "vite" || v === "cra") return "react";
+  if (v === "next-client" || v === "next-app-router-client") return "next-client";
   return "node";
 }

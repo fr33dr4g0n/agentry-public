@@ -703,3 +703,69 @@ describe("happy path: signup -> project -> ingest -> list -> get -> resolve", ()
     expect(resolveJson.next_action).toBeTruthy();
   });
 });
+
+describe("CORS for browser SDKs", () => {
+  it("OPTIONS preflight on /v1/store/:id/ returns 204 with permissive headers", async () => {
+    const res = await call("/v1/store/anything/", {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://my-app.test",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization,content-type",
+      },
+    });
+    expect([200, 204]).toContain(res.status);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect((res.headers.get("access-control-allow-methods") ?? "").toUpperCase()).toContain("POST");
+  });
+
+  it("OPTIONS preflight on /v1/track/:id/ allows authorization header", async () => {
+    const res = await call("/v1/track/anything/", {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://my-app.test",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization",
+      },
+    });
+    expect([200, 204]).toContain(res.status);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect((res.headers.get("access-control-allow-headers") ?? "").toLowerCase()).toContain("authorization");
+  });
+
+  it("OPTIONS preflight on /v1/deploys/:id/ works", async () => {
+    const res = await call("/v1/deploys/anything/", {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://my-app.test",
+        "access-control-request-method": "POST",
+      },
+    });
+    expect([200, 204]).toContain(res.status);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  it("real ingest with Origin header still works and includes ACAO", async () => {
+    const { apiKey } = await signup("cors-real@example.com");
+    const projRes = await call("/v1/projects", {
+      method: "POST",
+      headers: { authorization: `Bearer ${apiKey}` },
+      json: { name: "cors-real" },
+    });
+    const projData = (await projRes.json()) as { id: string; dsn: string };
+
+    const res = await call(`/v1/store/${projData.id}/`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${projData.dsn}`,
+        origin: "https://my-app.test",
+      },
+      json: {
+        exception: { values: [{ type: "BrowserError", value: "x",
+          stacktrace: { frames: [{ filename: "main.js", function: "f", lineno: 1 }] } }] },
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+});

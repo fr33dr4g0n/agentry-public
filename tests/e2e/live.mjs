@@ -334,6 +334,58 @@ async function main() {
     expect([401, 403, 404].includes(r.status), true, `user B listing user A's cases -> 4xx (got ${r.status})`);
   }
 
+  // 7.4 CORS preflight (browser SDK)
+  console.log("\n[cors]");
+  {
+    const r = await fetch(`${BASE}/v1/store/anything/`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://my-app.test",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization,content-type",
+      },
+    });
+    if ([200, 204].includes(r.status)) ok(`OPTIONS preflight on /v1/store ${r.status}`);
+    else bad("preflight wrong status", r.status);
+    if (r.headers.get("access-control-allow-origin") === "*") ok("ACAO=* on /v1/store preflight");
+    else bad("missing ACAO=*", r.headers.get("access-control-allow-origin"));
+  }
+  {
+    const r = await fetch(`${BASE}/v1/track/anything/`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://my-app.test",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization",
+      },
+    });
+    if (r.headers.get("access-control-allow-origin") === "*") ok("ACAO=* on /v1/track preflight");
+    else bad("missing ACAO=* on track", null);
+    const allowedHeaders = (r.headers.get("access-control-allow-headers") ?? "").toLowerCase();
+    if (allowedHeaders.includes("authorization")) ok("authorization allowed on track");
+    else bad("authorization not allowed", allowedHeaders);
+  }
+  {
+    // Real browser-shaped POST (with Origin) should still work and echo CORS headers
+    const r = await fetch(`${BASE}/v1/store/${projId}/`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${projDsn}`,
+        origin: "https://my-app.test",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        platform: "javascript",
+        exception: { values: [{ type: "BrowserOriginError", value: "from cors check",
+          stacktrace: { frames: [{ filename: "https://my-app.test/main.js", function: "fn", lineno: 1 }] } }] },
+      }),
+    });
+    if (r.status === 200) ok("real browser-origin POST returns 200");
+    else bad("browser-origin POST failed", r.status);
+    if (r.headers.get("access-control-allow-origin") === "*") ok("ACAO=* on real POST");
+    else bad("ACAO missing on real POST", null);
+  }
+
   // 7.5 Install guide
   console.log("\n[install guide]");
   {
@@ -361,6 +413,27 @@ async function main() {
     const hasAnalyticsStep = r.json?.steps?.some?.((s) => s.id === "track_signup_completed");
     if (!hasAnalyticsStep) ok("analytics steps filtered out");
     else bad("analytics step leaked through filter", null);
+  }
+  {
+    // Browser-target install guide
+    const r = await http("GET", "/v1/install/guide?framework=react");
+    expect(r.status, 200, "GET install/guide react 200");
+    const hasReactBoundary = r.json?.steps?.some?.((s) => s.id === "react_error_boundary");
+    if (hasReactBoundary) ok("react ErrorBoundary step in client guide");
+    else bad("react ErrorBoundary step missing", null);
+    const hasDeploy = r.json?.steps?.some?.((s) => s.id === "fire_deploy_event_from_ci");
+    if (!hasDeploy) ok("deploy step correctly omitted from client guide");
+    else bad("deploy step leaked into client guide", null);
+    const hasInstallSdk = r.json?.steps?.find?.((s) => s.id === "install_sdk");
+    if (hasInstallSdk?.command?.includes("@agentry/browser")) ok("client guide installs @agentry/browser");
+    else bad("client guide doesn't install browser SDK", hasInstallSdk?.command);
+  }
+  {
+    // Browser SDK install snippet
+    const r = await http("GET", "/v1/install/sdk/browser");
+    expect(r.status, 200, "GET install/sdk/browser 200");
+    if (r.json?.code?.includes("@agentry/browser")) ok("browser snippet imports @agentry/browser");
+    else bad("browser snippet wrong import", null);
   }
 
   // 7.6 Deploys

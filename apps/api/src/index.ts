@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { AgentryError, errors } from "@agentry/shared";
 import authRoutes from "./routes/auth.js";
 import projectRoutes from "./routes/projects.js";
@@ -70,6 +71,39 @@ export function createApp() {
       headers: { "content-type": "application/json" },
     });
   });
+
+  // CORS for browser SDKs. Only the ingest paths need wildcard origins —
+  // they're DSN-authenticated and the DSN is meant for client-side use.
+  // Auth/management endpoints (cases, projects, auth) intentionally omit CORS:
+  // browsers shouldn't be calling them, and a same-origin browser context
+  // would just echo a CORS error which surfaces the misuse fast.
+  app.use(
+    "/v1/store/*",
+    cors({
+      origin: "*",
+      allowMethods: ["POST", "OPTIONS"],
+      allowHeaders: ["authorization", "content-type", "x-sentry-auth"],
+      maxAge: 86400,
+    }),
+  );
+  app.use(
+    "/v1/track/*",
+    cors({
+      origin: "*",
+      allowMethods: ["POST", "OPTIONS"],
+      allowHeaders: ["authorization", "content-type", "x-sentry-auth"],
+      maxAge: 86400,
+    }),
+  );
+  app.use(
+    "/v1/deploys/*",
+    cors({
+      origin: "*",
+      allowMethods: ["POST", "OPTIONS"],
+      allowHeaders: ["authorization", "content-type", "x-sentry-auth"],
+      maxAge: 86400,
+    }),
+  );
 
   // Discovery / root
   app.route("/", discoveryRoutes);

@@ -27,6 +27,18 @@ Claude Code session via MCP. The user's own agent investigates and fixes.
 
 All three use the same DSN auth (Bearer or X-Sentry-Auth or ?sentry_key=).
 
+## SDKs
+
+- @agentry/node      server-side (Node 18+, Bun, edge runtimes that expose process.on)
+- @agentry/browser   client-side (React/Vue/Svelte/vanilla, Next.js client components)
+
+Both expose: agentry.init(), agentry.capture(), agentry.track(). The Node SDK
+also exposes agentry.deploy() (deploys are CI/server-side only).
+
+CORS is enabled on /v1/store/*, /v1/track/*, /v1/deploys/* with Access-Control-Allow-Origin: *
+since they're DSN-authenticated. Other endpoints (auth, projects, cases) reject browser
+origins; agentry's MCP server is the only intended client there.
+
 ## API surface
 
 Auth (no key required):
@@ -103,6 +115,28 @@ router.get("/v1/install/sdk/node", (c) => {
     readme_url: "https://github.com/agentry/agentry#readme",
     next_action:
       "Paste this into your app's entrypoint. Set AGENTRY_DSN to the DSN you got from POST /v1/projects.",
+  });
+});
+
+router.get("/v1/install/sdk/browser", (c) => {
+  const code =
+    "import { agentry } from '@agentry/browser';\n" +
+    "\n" +
+    "agentry.init({\n" +
+    "  // Build-time env: NEXT_PUBLIC_AGENTRY_DSN / VITE_AGENTRY_DSN / REACT_APP_AGENTRY_DSN\n" +
+    "  dsn: import.meta.env?.VITE_AGENTRY_DSN ?? process.env.NEXT_PUBLIC_AGENTRY_DSN!,\n" +
+    "  environment: import.meta.env?.MODE ?? process.env.NODE_ENV,\n" +
+    "  // autoCaptureGlobalErrors defaults to true — listens to window 'error' + 'unhandledrejection'.\n" +
+    "});\n";
+
+  return c.json({
+    language: "browser",
+    code,
+    required_env: ["NEXT_PUBLIC_AGENTRY_DSN or VITE_AGENTRY_DSN or REACT_APP_AGENTRY_DSN"],
+    readme_url: "https://github.com/agentry/agentry#readme",
+    next_action:
+      "Paste this into your app's client entrypoint, BEFORE other imports. " +
+      "DSN is build-time injected — it appears in the final bundle, which is fine: it only grants ingest, never reads.",
   });
 });
 

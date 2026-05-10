@@ -5,6 +5,7 @@
     { "path": "./packages/shared" },
     { "path": "./packages/db" },
     { "path": "./packages/sdk-node" },
+    { "path": "./packages/sdk-browser" },
     { "path": "./packages/mcp" },
     { "path": "./apps/api" }
   ]
