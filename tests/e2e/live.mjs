@@ -492,6 +492,42 @@ async function main() {
     }
   }
 
+  // 7.55 Suggested next-steps (the post-install conversational menu)
+  console.log("\n[next-steps]");
+  {
+    const r = await http("GET", `/v1/projects/${projId}/next-steps`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+    });
+    expect(r.status, 200, "GET next-steps 200");
+    if (r.json?.project_state) ok("project_state returned");
+    else bad("project_state missing", r.json);
+    if (Array.isArray(r.json?.suggestions) && r.json.suggestions.length >= 1)
+      ok(`${r.json.suggestions.length} suggestions returned`);
+    else bad("no suggestions", r.json);
+    // The error-monitoring suggestion requires has_cases which we have (resolved cases too count)
+    const errorsDashboard = r.json?.suggestions?.find?.(
+      (s) => s.id === "build_error_dashboard",
+    );
+    if (errorsDashboard?.prompt_template?.length > 50)
+      ok("build_error_dashboard surfaced with prompt_template");
+    else bad("build_error_dashboard missing or empty", errorsDashboard);
+  }
+  {
+    // Fresh project (no cases / no deploys) should get fewer suggestions
+    const fresh = await http("POST", "/v1/projects", {
+      headers: { authorization: `Bearer ${aliceKey}` },
+      body: { name: "empty-state-test" },
+    });
+    const freshProj = fresh.json;
+    const r = await http("GET", `/v1/projects/${freshProj.id}/next-steps`, {
+      headers: { authorization: `Bearer ${aliceKey}` },
+    });
+    expect(r.status, 200, "fresh project next-steps 200");
+    if (Array.isArray(r.json?.suggestions))
+      ok(`fresh project: ${r.json.suggestions.length} suggestions (state-aware filtered)`);
+    else bad("suggestions missing on fresh project", r.json);
+  }
+
   // 7.6 Recipes (the agent's no-dashboard query surface)
   console.log("\n[recipes]");
   {

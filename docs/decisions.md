@@ -4,6 +4,27 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-10 — Post-install conversational menu
+
+After `agentry_verify_install` flips green, the user lands on a curated menu of next-step prompts:
+
+- "Build a customized analytics dashboard"
+- "Build an error monitoring dashboard"
+- "Deploy health check"
+- "Investigate my biggest current bug"
+- "Review my signup funnel for drop-offs"
+- "Compare metrics across deploys"
+- "Generate this week's review post"
+- "Set up automated fix-on-error" (preview — webhook-backed in a follow-up)
+
+Each suggestion has a paste-ready `prompt_template` and lists the recipes/tools the agent will use (so the agent can also execute it directly without echoing the prompt back). The list is **state-aware** — `/v1/projects/:id/next-steps` checks for analytics_configured, has_cases, has_deploys, install_verified before deciding what to surface.
+
+- New endpoint: `GET /v1/projects/:id/next-steps`
+- New MCP tool: `agentry_suggested_next_steps`
+- `agentry_verify_install` now embeds the top-5 suggestions in its success response so the agent can offer them inline without a second call
+
+The reframe: agentry's onboarding doesn't end at "install works." It ends when the user has done one valuable thing with the data they're now collecting.
+
 ## 2026-05-10 — No dashboard: recipes + agent-readable query docs
 
 agentry will not ship a dashboard. The user's Claude Code is the visualization layer. Two surfaces exposed for that:

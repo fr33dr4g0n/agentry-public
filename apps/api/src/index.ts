@@ -11,6 +11,7 @@ import deployRoutes from "./routes/deploys.js";
 import trackRoutes from "./routes/track.js";
 import logRoutes from "./routes/log.js";
 import recipeRoutes from "./routes/recipes.js";
+import nextStepsRoutes from "./routes/next-steps.js";
 import type { AppBindings, Env } from "./env.js";
 
 export function createApp() {
@@ -149,6 +150,9 @@ export function createApp() {
 
   // Recipes — canonical query templates the agent can run for common asks.
   app.route("/", recipeRoutes);
+
+  // Suggested next-steps for post-install conversational prompts.
+  app.route("/", nextStepsRoutes);
 
   return app;
 }

@@ -1,7 +1,7 @@
 # Agentry — Build Status
 
-**Last updated:** 2026-05-10 (no-dashboard query surface — recipes + agent-readable docs)
-**Phase:** ✅ v0 working end-to-end with capture (server + client + any language) + **agent-driven query/visualization** (no dashboard). PostHog gated on env vars; activates the moment you bring the Hetzner box up.
+**Last updated:** 2026-05-10 (post-install conversational menu — suggested_next_steps)
+**Phase:** ✅ v0 working end-to-end with capture (server + client + any language) + agent-driven query/visualization (no dashboard) + **post-install next-step menu** that hands the agent a curated list of "what would you like to do next?" prompts. PostHog gated on env vars.
 
 ## Quickstart for the human (you, when you're back)
 

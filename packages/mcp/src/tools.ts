@@ -377,6 +377,23 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
       "doesn't match any recipe and the agent needs to compose ad-hoc HogQL.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
+  {
+    name: "agentry_suggested_next_steps",
+    description:
+      "After install/verify, surface this to the user: a curated list of 'what would you like to do " +
+      "next?' prompts with paste-ready templates ('Build a customized analytics dashboard', " +
+      "'Build an error monitoring dashboard', 'Generate this week's review post', etc.). " +
+      "Each suggestion lists the recipes/tools the agent will use, so the response is predictable. " +
+      "State-aware: only suggestions whose prerequisites are met (analytics configured, errors present, " +
+      "deploys recorded) are returned.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Defaults to the local default project." },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -608,6 +625,10 @@ export async function dispatchTool(
         });
       case "agentry_query_docs":
         return await handleQueryDocs();
+      case "agentry_suggested_next_steps":
+        return await handleSuggestedNextSteps(
+          a.project_id ? String(a.project_id) : undefined,
+        );
       default:
         return {
           error: {
@@ -1394,18 +1415,54 @@ async function handleVerifyInstall(input: {
   const passed = Object.entries(checks).filter(([, v]) => v.ok).map(([k]) => k);
   const failed = Object.entries(checks).filter(([, v]) => !v.ok).map(([k]) => k);
 
+  // Mark install_verified locally so the onboarding state machine moves to "ready".
+  if (failed.length === 0) {
+    const updated = loadConfig();
+    const proj = updated.projects[r.id];
+    if (proj) {
+      updated.projects[r.id] = { ...proj, install_verified: true };
+      saveConfig(updated);
+    }
+  }
+
+  // Pull in suggested next-steps so the agent can immediately surface a menu.
+  let nextSuggestions: Array<{ title: string; description: string; prompt_template: string }> = [];
+  if (failed.length === 0) {
+    try {
+      const ns = await api.getNextSteps(loadConfig(), r.id);
+      nextSuggestions = ns.suggestions as Array<{
+        title: string;
+        description: string;
+        prompt_template: string;
+      }>;
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  const baseAction =
+    failed.length === 0
+      ? "Install verified. Errors land in agentry_list_cases; analytics flow to PostHog; deploys via agentry_list_deploys."
+      : `Install incomplete. Failed signal types: ${failed.join(", ")}. ` +
+        "For each failed type, re-read its corresponding step in agentry_install_guide and fix.";
+
   return {
     ok: failed.length === 0,
     summary: `${passed.length}/${Object.keys(checks).length} signal types verified`,
     passed,
     failed,
     checks,
+    suggested_next_steps: nextSuggestions,
     next_action:
-      failed.length === 0
-        ? "Install verified. Errors will land in agentry_list_cases; analytics in PostHog; deploys via agentry_list_deploys. " +
-          "The agent now has all three signal streams to investigate from."
-        : `Install incomplete. Failed signal types: ${failed.join(", ")}. ` +
-          "For each failed type, re-read its corresponding step in agentry_install_guide and fix.",
+      failed.length === 0 && nextSuggestions.length > 0
+        ? baseAction +
+          " Now offer the user this menu of post-install prompts:\n" +
+          nextSuggestions
+            .slice(0, 5)
+            .map((s, i) => `  ${i + 1}. ${s.title} — ${s.description}`)
+            .join("\n") +
+          "\nWhen the user picks one, paste its `prompt_template` as their next prompt (or just execute the listed `uses`)."
+        : baseAction,
   };
 }
 
@@ -1474,5 +1531,41 @@ async function handleQueryDocs(): Promise<ToolResult> {
     next_action:
       "Read the schema + HogQL primer. Compose your query, then call `agentry_analytics_query` " +
       "with project_id and the HogQL string. For errors/deploys, use the relevant recipe or typed endpoints.",
+  };
+}
+
+async function handleSuggestedNextSteps(projectId?: string): Promise<ToolResult> {
+  const cfg = loadConfig();
+  if (!cfg.api_key) {
+    return {
+      error: {
+        code: "no_key",
+        message: "No API key on file.",
+        next_action: "Call `agentry_login` first.",
+      },
+    };
+  }
+  const id = projectId ?? cfg.default_project_id;
+  if (!id) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project specified and no default project set.",
+        next_action: "Pass project_id, or create a project first.",
+      },
+    };
+  }
+  const resp = await api.getNextSteps(cfg, id);
+  return {
+    project_id: id,
+    ...resp,
+    next_action:
+      "Surface these to the user as numbered options. Use this format:\n\n" +
+      "  Now that you're set up, want to:\n" +
+      "    1. <title> — <description>\n" +
+      "    2. <title> — <description>\n" +
+      "    3. <title> — <description>\n\n" +
+      "When the user picks one, paste the matching `prompt_template` as the user's next prompt " +
+      "(or just execute the listed `uses` directly).",
   };
 }

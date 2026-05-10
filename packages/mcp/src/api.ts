@@ -351,6 +351,16 @@ export const api = {
       return res.text();
     });
   },
+  getNextSteps(cfg: AgentryConfig, projectId: string): Promise<{
+    project_state: Record<string, boolean>;
+    count: number;
+    suggestions: Array<Record<string, unknown>>;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/next-steps`,
+    );
+  },
 };
 
 export interface InstallGuideStep {

@@ -411,6 +411,7 @@ describe("tool list completeness", () => {
         "agentry_rotate_key",
         "agentry_run_recipe",
         "agentry_status",
+        "agentry_suggested_next_steps",
         "agentry_track_test_event",
         "agentry_verify_install",
       ].sort()
