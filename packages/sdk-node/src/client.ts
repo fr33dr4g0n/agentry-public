@@ -1,6 +1,24 @@
 import { parseDsn, type IngestEventPayload } from "@agentry/shared";
 import { buildEventPayload, type CaptureContext } from "./payload.js";
 
+function serializeForLog(payload: unknown): unknown {
+  if (payload instanceof Error) {
+    return {
+      kind: "error",
+      name: payload.name,
+      message: payload.message,
+      stack: payload.stack,
+    };
+  }
+  if (payload === null || payload === undefined) {
+    return { kind: "log", value: payload === null ? "null" : "undefined" };
+  }
+  if (typeof payload !== "object") {
+    return { kind: "log", value: String(payload) };
+  }
+  return payload;
+}
+
 export interface InitOptions {
   dsn: string;
   /** Identifies the deploy that emitted this error. Becomes both `deploy_sha` and `release`. */
@@ -26,6 +44,7 @@ interface ResolvedConfig {
   ingestUrl: string;
   trackUrl: string;
   deployUrl: string;
+  logUrl: string;
   serverUrl: string;
   projectId: string;
   environment?: string;
@@ -80,12 +99,14 @@ export class AgentryClient {
     const ingestUrl = `${serverUrl}/v1/store/${parsed.projectId}/`;
     const trackUrl = `${serverUrl}/v1/track/${parsed.projectId}/`;
     const deployUrl = `${serverUrl}/v1/deploys/${parsed.projectId}/`;
+    const logUrl = `${serverUrl}/v1/log/${parsed.projectId}/`;
 
     const config: ResolvedConfig = {
       dsn: opts.dsn,
       ingestUrl,
       trackUrl,
       deployUrl,
+      logUrl,
       serverUrl,
       projectId: parsed.projectId,
     };
@@ -132,6 +153,42 @@ export class AgentryClient {
   captureUncaught = (err: unknown): void => {
     this.capture(err, { tags: { uncaught: "true" } });
   };
+
+  /**
+   * Just like console.log — agentry.log(anything). The server figures out whether
+   * it's an error, deploy, analytics event, or generic log line and routes it.
+   *
+   *   agentry.log(new Error("kaboom"));
+   *   agentry.log({ event: "checkout_completed", amount: 19.99 });
+   *   agentry.log({ sha: "deadbeef", branch: "main" });
+   */
+  async log(payload: unknown, timeoutMs = 5000): Promise<boolean> {
+    if (!this.config) {
+      this.warnNotInitialized();
+      return false;
+    }
+    const config = this.config;
+    const body = serializeForLog(payload);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await globalThis.fetch(config.logUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${config.dsn}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      return res.ok || res.status === 202;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 
   /**
    * Track an analytics event. Fire-and-forget; resolves once the request returns.

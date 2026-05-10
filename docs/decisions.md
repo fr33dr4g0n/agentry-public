@@ -4,6 +4,18 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-10 — Unified /v1/log/ endpoint + multi-language HTTP recipes
+
+agentry is now genuinely language-agnostic. The mental model is "just like console.log — fire JSON at the endpoint, we route it":
+
+- **`POST /v1/log/:project_id/`** — accepts any JSON. Auto-detects by inspecting fields: `kind` if explicit, otherwise has-exception → error, has-sha (no event) → deploy, has-event → analytics, else → generic log line. Coerces `{name, message, stack}` shorthand into Sentry envelope before fingerprinting. Same DSN auth as the typed endpoints.
+- **SDK `.log(payload)` method** added to both `@agentry/node` and `@agentry/browser`. Errors get serialized with stack; objects pass through; primitives wrap as `{kind: "log", value: ...}`.
+- **Multi-language install guide variants** for `python`, `ruby`, `go`, `php`, `java`, `dotnet`, `rust`, `elixir`, `curl`. Each returns a ~30-line copy-paste helper using the language's stdlib HTTP client. **No agentry SDK install** — the helper IS the install. Customers can audit every line; we never ask them to vet a new dependency.
+- **URL-form Sentry DSN** surfaced in project create response as `sentry_dsn_url`. Existing OSS Sentry SDKs in any language work by setting `SENTRY_DSN` to that URL — zero translation, zero glue code.
+- **`ingest_url`** also surfaced for direct-HTTP callers — no math required, just paste it.
+
+The pivot in framing: agentry isn't a set of SDKs that happen to talk to a server. It's a set of HTTP endpoints that happen to have SDKs for the JS ergonomics. Drop a 5-line helper in any language and you're done.
+
 ## 2026-05-10 — Browser SDK + CORS
 
 Shipped `@agentry/browser` and CORS on the ingest endpoints. The product now captures from both server and client surfaces.

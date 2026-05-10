@@ -21,19 +21,37 @@ Claude Code session via MCP. The user's own agent investigates and fixes.
 
 ## Signal types
 
-- Errors  (Sentry-wire-protocol ingest)         -> POST /v1/store/:project_id/
+agentry is just HTTP. POST any JSON to /v1/log/:project_id/ and we figure out
+what kind of signal it is. Or use the typed endpoints if you prefer:
+
+- Universal (auto-detects)                      -> POST /v1/log/:project_id/
+- Errors  (Sentry-wire-protocol)                -> POST /v1/store/:project_id/
 - Analytics (forwarded to per-user PostHog)     -> POST /v1/track/:project_id/
 - Deploys (linked to cases via timestamps)      -> POST /v1/deploys/:project_id/
 
-All three use the same DSN auth (Bearer or X-Sentry-Auth or ?sentry_key=).
+All four use the same DSN auth (Bearer or X-Sentry-Auth or ?sentry_key=).
+The /v1/log/ endpoint detects:
+  - 'kind' field if explicitly set
+  - has 'exception' / 'stack' / 'name'+'message'+'stack'  → error
+  - has 'sha' (and not 'event')                            → deploy
+  - has 'event'                                             → analytics
+  - everything else                                         → generic log line
 
-## SDKs
+## SDKs (optional — agentry is just HTTP)
 
-- @agentry/node      server-side (Node 18+, Bun, edge runtimes that expose process.on)
-- @agentry/browser   client-side (React/Vue/Svelte/vanilla, Next.js client components)
+- @agentry/node      server-side JS (Node 18+, Bun, edge runtimes)
+- @agentry/browser   client-side JS (React/Vue/Svelte/vanilla, Next.js client components)
 
-Both expose: agentry.init(), agentry.capture(), agentry.track(). The Node SDK
-also exposes agentry.deploy() (deploys are CI/server-side only).
+Both expose: agentry.init(), agentry.capture(), agentry.track(), agentry.log(). The Node
+SDK also exposes agentry.deploy() (deploys are CI/server-side only).
+
+For other languages, agentry's install guide returns a 30-line copy-paste helper using
+the language's stdlib HTTP client — no agentry SDK to install:
+
+  agentry_install_guide(framework: "python")  -> requests.post helper for Python
+  agentry_install_guide(framework: "ruby")    -> Net::HTTP helper for Ruby
+  agentry_install_guide(framework: "go")      -> net/http helper for Go
+  agentry_install_guide(framework: "php" | "java" | "dotnet" | "rust" | "elixir" | "curl")
 
 CORS is enabled on /v1/store/*, /v1/track/*, /v1/deploys/* with Access-Control-Allow-Origin: *
 since they're DSN-authenticated. Other endpoints (auth, projects, cases) reject browser

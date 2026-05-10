@@ -9,6 +9,7 @@ import ingestRoutes from "./routes/ingest.js";
 import discoveryRoutes from "./routes/discovery.js";
 import deployRoutes from "./routes/deploys.js";
 import trackRoutes from "./routes/track.js";
+import logRoutes from "./routes/log.js";
 import type { AppBindings, Env } from "./env.js";
 
 export function createApp() {
@@ -104,6 +105,15 @@ export function createApp() {
       maxAge: 86400,
     }),
   );
+  app.use(
+    "/v1/log/*",
+    cors({
+      origin: "*",
+      allowMethods: ["POST", "OPTIONS"],
+      allowHeaders: ["authorization", "content-type", "x-sentry-auth"],
+      maxAge: 86400,
+    }),
+  );
 
   // Discovery / root
   app.route("/", discoveryRoutes);
@@ -132,6 +142,9 @@ export function createApp() {
 
   // Analytics: /v1/track/:project_id/ (DSN), /v1/projects/:id/analytics/query (api key)
   app.route("/", trackRoutes);
+
+  // Unified "just log anything" endpoint — auto-detects what kind of signal it is.
+  app.route("/", logRoutes);
 
   return app;
 }

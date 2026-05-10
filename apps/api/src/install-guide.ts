@@ -9,13 +9,29 @@ export type Framework =
   | "express"
   | "browser"
   | "react"
-  | "next-client";
+  | "next-client"
+  // Direct-HTTP languages — agentry is just three POST endpoints, any HTTP client works.
+  | "python"
+  | "ruby"
+  | "go"
+  | "php"
+  | "java"
+  | "dotnet"
+  | "rust"
+  | "elixir"
+  | "curl";
 
 export const SERVER_FRAMEWORKS: Framework[] = ["node", "next", "express"];
 export const CLIENT_FRAMEWORKS: Framework[] = ["browser", "react", "next-client"];
+export const HTTP_FRAMEWORKS: Framework[] = [
+  "python", "ruby", "go", "php", "java", "dotnet", "rust", "elixir", "curl",
+];
 
 export function isClientFramework(f: Framework): boolean {
   return CLIENT_FRAMEWORKS.includes(f);
+}
+export function isHttpFramework(f: Framework): boolean {
+  return HTTP_FRAMEWORKS.includes(f);
 }
 
 export interface InstallGuideStep {
@@ -571,6 +587,12 @@ PostHog.`,
 
 export function buildInstallGuide(framework: Framework, signalTypes: string[]): InstallGuide {
   const wantedSet = new Set(signalTypes.length ? signalTypes : ["errors", "analytics", "deploys"]);
+
+  // Direct-HTTP languages get a separate, simpler builder.
+  if (isHttpFramework(framework)) {
+    return buildHttpGuide(framework, wantedSet);
+  }
+
   const steps: InstallGuideStep[] = [...commonSteps(framework)];
   const isClient = isClientFramework(framework);
 
@@ -619,5 +641,576 @@ export function detectFramework(s: string | undefined | null): Framework {
   if (v === "browser" || v === "vanilla") return "browser";
   if (v === "react" || v === "vite" || v === "cra") return "react";
   if (v === "next-client" || v === "next-app-router-client") return "next-client";
+  if (["python", "django", "flask", "fastapi"].includes(v)) return "python";
+  if (["ruby", "rails", "sinatra"].includes(v)) return "ruby";
+  if (["go", "golang", "gin", "echo"].includes(v)) return "go";
+  if (["php", "laravel", "symfony"].includes(v)) return "php";
+  if (["java", "kotlin", "spring", "spring-boot"].includes(v)) return "java";
+  if (["dotnet", "csharp", "c#", "aspnetcore", "aspnet"].includes(v)) return "dotnet";
+  if (["rust", "actix", "axum", "rocket"].includes(v)) return "rust";
+  if (["elixir", "phoenix"].includes(v)) return "elixir";
+  if (["curl", "http", "shell", "bash"].includes(v)) return "curl";
   return "node";
+}
+
+// ---------------------------------------------------------------------------
+// Direct-HTTP language guides
+// ---------------------------------------------------------------------------
+//
+// Premise: agentry is just HTTP. Three POST endpoints accept JSON. So the
+// "install" for any language is "set the DSN, write a 5-line helper, call it."
+// No SDK install. No import of agentry. The helper is a copy-paste artifact.
+// ---------------------------------------------------------------------------
+
+interface LangRecipe {
+  language_human: string;
+  install_lib?: { command: string; reason: string }; // optional — most stdlibs are enough
+  helper_code: string;
+  helper_file_hint: string;
+  error_handler: { code: string; file_hint: string };
+}
+
+const LANG_RECIPES: Record<Exclude<Framework, "node" | "next" | "express" | "browser" | "react" | "next-client">, LangRecipe> = {
+  python: {
+    language_human: "Python",
+    install_lib: { command: "pip install requests", reason: "Stdlib urllib works too; requests is just easier." },
+    helper_file_hint: "Create a thin agentry.py module wherever your project keeps shared utilities.",
+    helper_code: `# agentry.py
+import os, json, traceback, requests
+
+AGENTRY_URL = os.environ["AGENTRY_URL"]      # e.g. https://api.agentry.sh
+AGENTRY_DSN = os.environ["AGENTRY_DSN"]      # agnt_<projectId>.<token>
+PROJECT_ID = AGENTRY_DSN.split("_", 1)[1].split(".", 1)[0]
+
+def log(payload):
+    """Just like print() — agentry routes whatever you send to the right place."""
+    try:
+        if isinstance(payload, BaseException):
+            payload = {
+                "kind": "error",
+                "name": type(payload).__name__,
+                "message": str(payload),
+                "stack": "".join(traceback.format_exception(type(payload), payload, payload.__traceback__)),
+            }
+        requests.post(
+            f"{AGENTRY_URL}/v1/log/{PROJECT_ID}/",
+            headers={"authorization": f"Bearer {AGENTRY_DSN}", "content-type": "application/json"},
+            data=json.dumps(payload),
+            timeout=5,
+        )
+    except Exception:
+        pass  # never let monitoring crash the app
+`,
+    error_handler: {
+      file_hint:
+        "Wherever your framework registers global error handlers — Django: settings.py + middleware; " +
+        "Flask: @app.errorhandler(Exception); FastAPI: @app.exception_handler(Exception). " +
+        "Just call agentry.log(exc). Set AGENTRY_DSN and AGENTRY_URL env vars.",
+      code: `# Flask example
+from flask import Flask
+import agentry
+
+app = Flask(__name__)
+
+@app.errorhandler(Exception)
+def handle_all(exc):
+    agentry.log(exc)
+    raise exc
+
+# Track an analytics event:
+agentry.log({"event": "signup_completed", "distinct_id": user_id, "properties": {"plan": "free"}})
+
+# Record a deploy from CI / startup:
+agentry.log({"sha": os.environ["GIT_SHA"], "environment": "production"})`,
+    },
+  },
+  ruby: {
+    language_human: "Ruby",
+    helper_file_hint: "Create app/lib/agentry.rb (Rails) or lib/agentry.rb (Sinatra/plain).",
+    helper_code: `# lib/agentry.rb
+require "net/http"
+require "json"
+require "uri"
+
+module Agentry
+  URL = ENV.fetch("AGENTRY_URL")
+  DSN = ENV.fetch("AGENTRY_DSN")
+  PROJECT_ID = DSN.split("_", 2)[1].split(".", 2)[0]
+
+  def self.log(payload)
+    if payload.is_a?(Exception)
+      payload = {
+        kind: "error",
+        name: payload.class.name,
+        message: payload.message,
+        stack: payload.backtrace&.join("\\n"),
+      }
+    end
+    uri = URI("#{URL}/v1/log/#{PROJECT_ID}/")
+    req = Net::HTTP::Post.new(uri, "authorization" => "Bearer #{DSN}", "content-type" => "application/json")
+    req.body = payload.to_json
+    Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https") { |h| h.request(req) }
+  rescue => _
+    nil  # never let monitoring crash the app
+  end
+end`,
+    error_handler: {
+      file_hint:
+        "Rails: config/application.rb (use Rails.application.config.exceptions_app or rescue_from in ApplicationController). " +
+        "Sinatra: error do block.",
+      code: `# Rails: app/controllers/application_controller.rb
+class ApplicationController < ActionController::Base
+  rescue_from StandardError do |e|
+    Agentry.log(e)
+    raise e
+  end
+end
+
+# Track an event:
+Agentry.log(event: "signup_completed", distinct_id: current_user.id, properties: { plan: "free" })
+
+# Record a deploy:
+Agentry.log(sha: ENV["GIT_SHA"], environment: "production")`,
+    },
+  },
+  go: {
+    language_human: "Go",
+    helper_file_hint: "Create internal/agentry/agentry.go (or wherever your project keeps shared packages).",
+    helper_code: `// internal/agentry/agentry.go
+package agentry
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "os"
+    "runtime/debug"
+    "strings"
+    "time"
+)
+
+var (
+    url       = os.Getenv("AGENTRY_URL")
+    dsn       = os.Getenv("AGENTRY_DSN")
+    projectID = strings.SplitN(strings.SplitN(dsn, "_", 2)[1], ".", 2)[0]
+    client    = &http.Client{Timeout: 5 * time.Second}
+)
+
+// Log accepts any value. errors get serialized with stack; everything else is sent verbatim.
+func Log(payload any) {
+    if err, ok := payload.(error); ok {
+        payload = map[string]any{
+            "kind":    "error",
+            "name":    fmt.Sprintf("%T", err),
+            "message": err.Error(),
+            "stack":   string(debug.Stack()),
+        }
+    }
+    body, _ := json.Marshal(payload)
+    req, _ := http.NewRequest("POST", url+"/v1/log/"+projectID+"/", bytes.NewReader(body))
+    req.Header.Set("authorization", "Bearer "+dsn)
+    req.Header.Set("content-type", "application/json")
+    res, err := client.Do(req)
+    if err != nil { return } // never crash the app
+    res.Body.Close()
+}`,
+    error_handler: {
+      file_hint:
+        "Wrap your http.Handler with a recovery middleware. Gin: gin.Recovery() + custom middleware. " +
+        "Echo: middleware.RecoverWithConfig.",
+      code: `// Generic net/http recovery middleware
+func AgentryRecovery(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        defer func() {
+            if rec := recover(); rec != nil {
+                if err, ok := rec.(error); ok {
+                    agentry.Log(err)
+                } else {
+                    agentry.Log(map[string]any{"kind": "error", "message": fmt.Sprint(rec)})
+                }
+                http.Error(w, "internal", 500)
+            }
+        }()
+        next.ServeHTTP(w, r)
+    })
+}
+
+// Track:
+agentry.Log(map[string]any{"event": "signup_completed", "distinct_id": userID})
+
+// Deploy:
+agentry.Log(map[string]any{"sha": os.Getenv("GIT_SHA"), "environment": "production"})`,
+    },
+  },
+  php: {
+    language_human: "PHP",
+    helper_file_hint: "src/Agentry.php (PSR-4 compatible).",
+    helper_code: `<?php
+// src/Agentry.php
+class Agentry {
+    public static function log(mixed $payload): void {
+        $url = getenv("AGENTRY_URL");
+        $dsn = getenv("AGENTRY_DSN");
+        $projectId = explode(".", explode("_", $dsn, 2)[1], 2)[0];
+
+        if ($payload instanceof \\Throwable) {
+            $payload = [
+                "kind" => "error",
+                "name" => get_class($payload),
+                "message" => $payload->getMessage(),
+                "stack" => $payload->getTraceAsString(),
+            ];
+        }
+        $ch = curl_init("$url/v1/log/$projectId/");
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($payload),
+            CURLOPT_HTTPHEADER => ["authorization: Bearer $dsn", "content-type: application/json"],
+            CURLOPT_TIMEOUT => 5,
+            CURLOPT_RETURNTRANSFER => true,
+        ]);
+        try { curl_exec($ch); } catch (\\Throwable $_) {}  // never crash the app
+        curl_close($ch);
+    }
+}`,
+    error_handler: {
+      file_hint:
+        "Laravel: app/Exceptions/Handler.php, override report(). " +
+        "Symfony: a Kernel exception event listener. Vanilla: set_exception_handler().",
+      code: `// Laravel app/Exceptions/Handler.php
+public function report(Throwable $e) {
+    Agentry::log($e);
+    parent::report($e);
+}
+
+// Track:
+Agentry::log(["event" => "signup_completed", "distinct_id" => $userId]);
+
+// Deploy:
+Agentry::log(["sha" => getenv("GIT_SHA"), "environment" => "production"]);`,
+    },
+  },
+  java: {
+    language_human: "Java / Kotlin",
+    helper_file_hint:
+      "Create src/main/java/com/yourapp/Agentry.java (Spring/plain Java) or " +
+      "src/main/kotlin/.../Agentry.kt (Kotlin).",
+    helper_code: `// Java — uses java.net.http (JDK 11+)
+package com.yourapp;
+
+import java.net.URI;
+import java.net.http.*;
+import java.net.http.HttpRequest.BodyPublishers;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Map;
+
+public class Agentry {
+    private static final String URL = System.getenv("AGENTRY_URL");
+    private static final String DSN = System.getenv("AGENTRY_DSN");
+    private static final String PROJECT_ID = DSN.split("_", 2)[1].split("\\\\.", 2)[0];
+    private static final HttpClient CLIENT = HttpClient.newHttpClient();
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    public static void log(Object payload) {
+        try {
+            if (payload instanceof Throwable t) {
+                StringWriter sw = new StringWriter();
+                t.printStackTrace(new PrintWriter(sw));
+                payload = Map.of("kind", "error", "name", t.getClass().getName(),
+                    "message", String.valueOf(t.getMessage()), "stack", sw.toString());
+            }
+            HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(URL + "/v1/log/" + PROJECT_ID + "/"))
+                .header("authorization", "Bearer " + DSN)
+                .header("content-type", "application/json")
+                .POST(BodyPublishers.ofString(MAPPER.writeValueAsString(payload)))
+                .build();
+            CLIENT.sendAsync(req, HttpResponse.BodyHandlers.discarding());
+        } catch (Exception ignored) {}
+    }
+}`,
+    error_handler: {
+      file_hint:
+        "Spring Boot: @ControllerAdvice with @ExceptionHandler(Exception.class). " +
+        "Plain: Thread.setDefaultUncaughtExceptionHandler.",
+      code: `// Spring Boot
+@ControllerAdvice
+public class AgentryAdvice {
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<String> handle(Exception e) {
+        Agentry.log(e);
+        return ResponseEntity.status(500).body("internal");
+    }
+}
+
+// Plain Java startup:
+Thread.setDefaultUncaughtExceptionHandler((thread, ex) -> Agentry.log(ex));
+
+// Track / Deploy: Agentry.log(Map.of("event", "signup_completed", "distinct_id", userId));`,
+    },
+  },
+  dotnet: {
+    language_human: ".NET (C#)",
+    helper_file_hint: "Add Agentry.cs to your shared library or main project.",
+    helper_code: `// Agentry.cs — .NET 8+ uses System.Net.Http + System.Text.Json
+using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Net.Http.Json;
+using System.Threading.Tasks;
+
+public static class Agentry {
+    private static readonly string Url = Environment.GetEnvironmentVariable("AGENTRY_URL")!;
+    private static readonly string Dsn = Environment.GetEnvironmentVariable("AGENTRY_DSN")!;
+    private static readonly string ProjectId = Dsn.Split('_', 2)[1].Split('.', 2)[0];
+    private static readonly HttpClient Client = new() { Timeout = TimeSpan.FromSeconds(5) };
+
+    public static async Task Log(object payload) {
+        try {
+            if (payload is Exception ex) {
+                payload = new Dictionary<string, object?> {
+                    ["kind"] = "error",
+                    ["name"] = ex.GetType().FullName,
+                    ["message"] = ex.Message,
+                    ["stack"] = ex.ToString(),
+                };
+            }
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{Url}/v1/log/{ProjectId}/") {
+                Content = JsonContent.Create(payload),
+            };
+            req.Headers.TryAddWithoutValidation("authorization", $"Bearer {Dsn}");
+            await Client.SendAsync(req);
+        } catch { /* never crash the app */ }
+    }
+}`,
+    error_handler: {
+      file_hint:
+        "ASP.NET Core: app.UseExceptionHandler with custom middleware in Program.cs.",
+      code: `// Program.cs
+app.UseExceptionHandler(b => b.Run(async ctx => {
+    var ex = ctx.Features.Get<IExceptionHandlerFeature>()?.Error;
+    if (ex != null) await Agentry.Log(ex);
+    ctx.Response.StatusCode = 500;
+    await ctx.Response.WriteAsync("internal");
+}));
+
+// Track:
+await Agentry.Log(new { @event = "signup_completed", distinct_id = userId });
+
+// Deploy:
+await Agentry.Log(new { sha = Environment.GetEnvironmentVariable("GIT_SHA"), environment = "production" });`,
+    },
+  },
+  rust: {
+    language_human: "Rust",
+    install_lib: { command: "cargo add reqwest serde_json --features reqwest/json", reason: "Reqwest is the standard HTTP client; serde_json for serialization." },
+    helper_file_hint: "Add src/agentry.rs as a module on your library/binary crate.",
+    helper_code: `// src/agentry.rs
+use serde_json::{json, Value};
+use std::env;
+
+fn project_id() -> String {
+    let dsn = env::var("AGENTRY_DSN").unwrap_or_default();
+    dsn.splitn(2, '_').nth(1).and_then(|s| s.splitn(2, '.').next()).unwrap_or("").into()
+}
+
+pub async fn log(payload: Value) {
+    let url = env::var("AGENTRY_URL").unwrap_or_default();
+    let dsn = env::var("AGENTRY_DSN").unwrap_or_default();
+    let pid = project_id();
+    let _ = reqwest::Client::new()
+        .post(format!("{url}/v1/log/{pid}/"))
+        .bearer_auth(&dsn)
+        .json(&payload)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await;  // never crash the app
+}
+
+pub async fn log_error(err: &dyn std::error::Error) {
+    log(json!({
+        "kind": "error",
+        "name": format!("{:?}", err),
+        "message": err.to_string(),
+        "stack": format!("{:?}", err),  // backtrace via std::backtrace::Backtrace if available
+    })).await;
+}`,
+    error_handler: {
+      file_hint:
+        "Wrap your axum/actix routes with a panic-catching layer that calls agentry::log_error. " +
+        "Or use std::panic::set_hook in main().",
+      code: `// In main(), set a panic hook so unrecovered panics get reported:
+std::panic::set_hook(Box::new(|info| {
+    let msg = info.to_string();
+    let _ = tokio::runtime::Handle::try_current().map(|h| {
+        h.spawn(crate::agentry::log(serde_json::json!({
+            "kind": "error", "name": "panic", "message": msg
+        })));
+    });
+}));
+
+// Track / Deploy: agentry::log(json!({"event": "signup_completed", "distinct_id": user_id})).await;`,
+    },
+  },
+  elixir: {
+    language_human: "Elixir / Phoenix",
+    helper_file_hint: "lib/agentry.ex on a Phoenix or plain Elixir project.",
+    helper_code: `# lib/agentry.ex
+defmodule Agentry do
+  @url System.get_env("AGENTRY_URL")
+  @dsn System.get_env("AGENTRY_DSN")
+
+  def project_id, do: @dsn |> String.split("_", parts: 2) |> Enum.at(1) |> String.split(".", parts: 2) |> Enum.at(0)
+
+  def log(payload) do
+    payload = normalize(payload)
+    url = "#{@url}/v1/log/#{project_id()}/"
+    headers = [{"authorization", "Bearer #{@dsn}"}, {"content-type", "application/json"}]
+    body = Jason.encode!(payload)
+    Task.start(fn -> :hackney.request(:post, url, headers, body, [recv_timeout: 5_000]) end)
+    :ok
+  end
+
+  defp normalize(%{__exception__: true} = ex) do
+    %{kind: "error", name: ex.__struct__ |> Atom.to_string(), message: Exception.message(ex),
+      stack: Exception.format(:error, ex, __STACKTRACE__)}
+  end
+  defp normalize(other), do: other
+end`,
+    error_handler: {
+      file_hint:
+        "Phoenix: a custom Plug.ErrorHandler. Plain: rescue blocks at top-level Task supervisors.",
+      code: `# Phoenix endpoint.ex
+plug Plug.ErrorHandler
+
+defp handle_errors(_conn, %{kind: _kind, reason: reason, stack: _stack}) do
+  Agentry.log(reason)
+end
+
+# Track:
+Agentry.log(%{event: "signup_completed", distinct_id: user.id, properties: %{plan: "free"}})
+
+# Deploy:
+Agentry.log(%{sha: System.get_env("GIT_SHA"), environment: "production"})`,
+    },
+  },
+  curl: {
+    language_human: "curl / shell / any HTTP client",
+    helper_file_hint: "No helper needed — agentry is just one POST.",
+    helper_code: `# Set your env vars first:
+export AGENTRY_URL="https://api.agentry.sh"
+export AGENTRY_DSN="agnt_<projectId>.<token>"
+export PROJECT_ID="\${AGENTRY_DSN#agnt_}"
+export PROJECT_ID="\${PROJECT_ID%%.*}"
+
+# Send any JSON payload — agentry figures out what kind of signal it is:
+agentry_log() {
+  curl -fsS -X POST "$AGENTRY_URL/v1/log/$PROJECT_ID/" \\
+    -H "authorization: Bearer $AGENTRY_DSN" \\
+    -H "content-type: application/json" \\
+    -d "$1" >/dev/null 2>&1 || true
+}`,
+    error_handler: {
+      file_hint:
+        "Anywhere a script can throw or a process exits non-zero. Wrap with 'trap' in bash, " +
+        "or call agentry_log explicitly after \`|| true\` patterns to capture failures.",
+      code: `# Bash trap on error
+trap 'agentry_log "{\\"kind\\":\\"error\\",\\"message\\":\\"line $LINENO failed: $BASH_COMMAND\\"}"' ERR
+
+# Track an event:
+agentry_log '{"event": "cron_completed", "distinct_id": "etl-job-1", "properties": {"rows": 42}}'
+
+# Record a deploy from CI:
+agentry_log '{"sha": "'"$GITHUB_SHA"'", "branch": "'"$GITHUB_REF_NAME"'", "environment": "production"}'`,
+    },
+  },
+};
+
+function buildHttpGuide(framework: Framework, signalTypes: Set<string>): InstallGuide {
+  const recipe = LANG_RECIPES[framework as keyof typeof LANG_RECIPES];
+  if (!recipe) {
+    // Shouldn't happen — caller already gated on isHttpFramework.
+    return buildInstallGuide("node", [...signalTypes]);
+  }
+  const steps: InstallGuideStep[] = [];
+
+  if (recipe.install_lib) {
+    steps.push({
+      id: "install_http_lib",
+      title: `Install an HTTP client (${recipe.language_human})`,
+      why: recipe.install_lib.reason,
+      action: "run",
+      command: recipe.install_lib.command,
+      validate: "Library should appear in your dependency manifest.",
+    });
+  }
+
+  steps.push({
+    id: "set_env_vars",
+    title: "Set AGENTRY_DSN and AGENTRY_URL in the runtime environment",
+    why:
+      "DSN authenticates each event to your project; URL points at the agentry deployment. " +
+      "These are read by the helper module, never hardcoded.",
+    action: "manual",
+    file_hint:
+      "Set in .env / Heroku config / docker-compose / your platform's env settings. " +
+      "AGENTRY_URL example: https://api.agentry.sh. AGENTRY_DSN format: agnt_<projectId>.<token> " +
+      "(get this from `agentry_create_project`).",
+    validate: "Both env vars must be readable by the running process.",
+  });
+
+  steps.push({
+    id: "drop_in_helper",
+    title: `Drop in the agentry helper (${recipe.language_human})`,
+    why:
+      "agentry's API is just three POST endpoints. The helper is a copy-paste artifact — no SDK install, " +
+      "no agentry-named dependency to vet. The whole helper is ~30 lines.",
+    action: "edit",
+    file_hint: recipe.helper_file_hint,
+    code: recipe.helper_code,
+    validate:
+      "Function/module is callable from your app. Calling it with a test payload should not throw.",
+  });
+
+  if (signalTypes.has("errors") || signalTypes.has("analytics") || signalTypes.has("deploys")) {
+    steps.push({
+      id: "wire_signal_capture",
+      title: "Wire up error / analytics / deploy capture",
+      why:
+        "Errors get caught by your framework's error handler and forwarded. Analytics events and " +
+        "deploys are explicit calls. All three go through the same `log()` helper.",
+      action: "edit",
+      file_hint: recipe.error_handler.file_hint,
+      code: recipe.error_handler.code,
+      validate:
+        "Throw an unhandled exception in dev. The case should appear in agentry_list_cases. " +
+        "Track an event. Verify it arrives in PostHog (agentry_analytics_query). " +
+        "If a CI deploy step calls deploy variant, agentry_list_deploys should show it.",
+    });
+  }
+
+  if (signalTypes.has("errors") || signalTypes.has("analytics")) {
+    steps.push(privacyPolicyStep(framework, signalTypes));
+  }
+
+  steps.push(...verifySteps());
+
+  return {
+    framework,
+    signal_types: [...signalTypes],
+    steps,
+    pitfalls: [
+      "Don't fail the request if logging fails. The helper has try/catch (or equivalent) — keep it.",
+      "Don't log sensitive request bodies. Strip auth tokens and PII before passing to log().",
+      "AGENTRY_DSN is ingest-only; safe to deploy as a regular env var (not a high-risk secret).",
+      "If your platform restricts outbound HTTP, allowlist the agentry deployment host.",
+    ],
+    signal_health_principles: SIGNAL_HEALTH_PRINCIPLES,
+    next_action:
+      "Read each step in order. After all steps land, call agentry_verify_install — that's the only proof " +
+      "the install actually works. The helper is intentionally tiny so an agent can review every line.",
+  };
 }

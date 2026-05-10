@@ -71,13 +71,16 @@ const flushed = await agentry.flush(5000);
 if (!flushed) { console.error("flush failed/timed out"); process.exit(1); }
 console.log("  ✓ flush succeeded");
 
-// Step 3.5: fire a deploy event
-console.log("\n[step 3.5] deploy event");
-const dep = await api("POST", `/v1/deploys/${projectId}/`,
-  { sha: "dogfood-sha-" + ts.toString().slice(-6), branch: "main", environment: "dogfood", message: "synthetic dogfood deploy" },
-  { authorization: `Bearer ${dsn}` });
-if (dep.status !== 200) { console.error("deploy failed:", dep); process.exit(1); }
-console.log("  ✓ deploy recorded");
+// Step 3.5: fire a deploy event via the unified /v1/log/ endpoint (the simplest path)
+console.log("\n[step 3.5] deploy event via agentry.log()");
+const ok = await agentry.log({
+  sha: "dogfood-sha-" + ts.toString().slice(-6),
+  branch: "main",
+  environment: "dogfood",
+  message: "synthetic dogfood deploy",
+});
+if (!ok) { console.error("agentry.log({sha:...}) failed"); process.exit(1); }
+console.log("  ✓ deploy logged via agentry.log() (auto-detected as deploy)");
 
 // Step 4: verify cases landed
 console.log("\n[step 4] verify cases via API");

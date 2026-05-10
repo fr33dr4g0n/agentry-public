@@ -1,7 +1,7 @@
 # Agentry — Build Status
 
-**Last updated:** 2026-05-10 (browser SDK + CORS landed)
-**Phase:** ✅ v0 working end-to-end with **server + client** signal capture. PostHog gated on env vars; activates the moment you bring the Hetzner box up.
+**Last updated:** 2026-05-10 (unified /v1/log/ endpoint + multi-language HTTP recipes)
+**Phase:** ✅ v0 working end-to-end with **server + client + ANY-language** signal capture. agentry is just three POST endpoints — works in Python, Ruby, Go, PHP, Java, .NET, Rust, Elixir, curl, anything that can speak HTTP. PostHog gated on env vars; activates the moment you bring the Hetzner box up.
 
 ## Quickstart for the human (you, when you're back)
 
@@ -82,6 +82,25 @@ agentry/
 ├── CLAUDE.md                 Repo instructions for future Claude sessions
 └── docs/decisions.md         Append-only log of design decisions
 ```
+
+## The console.log shape
+
+```ts
+// JS server / browser:
+agentry.log(new Error("kaboom"));                              // → error case
+agentry.log({ event: "checkout_completed", amount: 19.99 });   // → analytics
+agentry.log({ sha: "deadbeef", branch: "main" });              // → deploy
+agentry.log({ anything: "we route it for you" });              // → generic log
+```
+
+```python
+# Python (requests):
+agentry.log(exception)                                          # → error case
+agentry.log({"event": "checkout_completed", "amount": 19.99})  # → analytics
+agentry.log({"sha": "deadbeef", "branch": "main"})             # → deploy
+```
+
+Same shape for Ruby, Go, PHP, Java, .NET, Rust, Elixir, and shell. The unified endpoint is `POST /v1/log/:project_id/` — auto-detects what kind of signal each payload is and routes to the right pipeline.
 
 ## Server vs client install (the agent's mental model)
 

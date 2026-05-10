@@ -489,6 +489,79 @@ async function main() {
     }
   }
 
+  // 7.65 Unified /v1/log/ endpoint — auto-detects what kind of signal it is
+  console.log("\n[/v1/log/ unified endpoint]");
+  {
+    // Error shape (Sentry-like)
+    const r = await http("POST", `/v1/log/${projId}/`, {
+      headers: { authorization: `Bearer ${projDsn}` },
+      body: { exception: { values: [{ type: "LogTestError", value: "from /v1/log",
+        stacktrace: { frames: [{ filename: "src/log_test.ts", function: "fn", lineno: 1 }] } }] } },
+    });
+    expect(r.status, 200, "log(error envelope) -> 200");
+    expect(r.json?.detected_kind, "error", "detected_kind=error");
+    if (r.json?.case_id) ok("case_id returned for error log");
+    else bad("case_id missing", r.json);
+  }
+  {
+    // Plain {name, message, stack} shape (e.g. raw Error from Python via curl)
+    const r = await http("POST", `/v1/log/${projId}/`, {
+      headers: { authorization: `Bearer ${projDsn}` },
+      body: { name: "PythonStyleError", message: "from python", stack: "  at fn (file.py:1:1)" },
+    });
+    expect(r.status, 200, "log({name,message,stack}) -> 200");
+    expect(r.json?.detected_kind, "error", "detected_kind=error for plain shape");
+  }
+  {
+    // Deploy shape — has sha, no event
+    const r = await http("POST", `/v1/log/${projId}/`, {
+      headers: { authorization: `Bearer ${projDsn}` },
+      body: { sha: "logtest-sha", branch: "main", environment: "production" },
+    });
+    expect(r.status, 200, "log({sha}) -> 200");
+    expect(r.json?.detected_kind, "deploy", "detected_kind=deploy");
+    if (r.json?.deploy_id) ok("deploy_id returned");
+    else bad("deploy_id missing", r.json);
+  }
+  {
+    // Analytics event — should 503 since PostHog not configured locally
+    const r = await http("POST", `/v1/log/${projId}/`, {
+      headers: { authorization: `Bearer ${projDsn}` },
+      body: { event: "log_endpoint_test" },
+    });
+    if ([502, 503].includes(r.status)) ok(`log({event}) routed to analytics, status ${r.status} (PostHog unconfigured)`);
+    else bad("event log unexpected status", { status: r.status, json: r.json });
+    expect(r.json?.detected_kind, "event", "detected_kind=event");
+  }
+  {
+    // Explicit kind wins over auto-detect
+    const r = await http("POST", `/v1/log/${projId}/`, {
+      headers: { authorization: `Bearer ${projDsn}` },
+      body: { kind: "deploy", sha: "explicit-sha" },
+    });
+    expect(r.json?.detected_kind, "deploy", "explicit kind=deploy honored");
+  }
+  {
+    // Wrong DSN should be rejected
+    const r = await http("POST", `/v1/log/${projId}/`, {
+      headers: { authorization: `Bearer agnt_wrong.token` },
+      body: { sha: "x" },
+    });
+    expect(r.status, 401, "log wrong DSN -> 401");
+  }
+
+  // 7.66 Multi-language install guides
+  console.log("\n[multi-language guides]");
+  for (const fw of ["python", "ruby", "go", "php", "java", "dotnet", "rust", "elixir", "curl"]) {
+    const r = await http("GET", `/v1/install/guide?framework=${fw}`);
+    expect(r.status, 200, `GET install/guide ${fw} 200`);
+    if (Array.isArray(r.json?.steps) && r.json.steps.length >= 4) ok(`${fw} guide has steps`);
+    else bad(`${fw} guide missing steps`, r.json);
+    const helper = r.json?.steps?.find?.((s) => s.id === "drop_in_helper");
+    if (helper?.code?.length > 100) ok(`${fw} drop-in helper present`);
+    else bad(`${fw} drop-in helper missing`, helper);
+  }
+
   // 7.7 Analytics — should 503 because PostHog isn't configured in dev
   console.log("\n[analytics — PostHog unconfigured]");
   {

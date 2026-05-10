@@ -24,6 +24,10 @@ export function deploy(opts: DeployOptions): Promise<boolean> {
   return client.deploy(opts);
 }
 
+export function log(payload: unknown): Promise<boolean> {
+  return client.log(payload);
+}
+
 export function flush(timeoutMs?: number): Promise<boolean> {
   return client.flush(timeoutMs);
 }
@@ -40,6 +44,7 @@ export const agentry = {
   capture,
   track,
   deploy,
+  log,
   flush,
   close,
   captureUncaught,

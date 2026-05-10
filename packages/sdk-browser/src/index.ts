@@ -11,6 +11,7 @@ const client = new BrowserAgentryClient();
 export function init(opts: InitOptions): void { client.init(opts); }
 export function capture(err: unknown, ctx?: CaptureContext): void { client.capture(err, ctx); }
 export function track(event: string, opts?: TrackOptions): Promise<boolean> { return client.track(event, opts); }
+export function log(payload: unknown): Promise<boolean> { return client.log(payload); }
 export function flush(timeoutMs?: number): Promise<boolean> { return client.flush(timeoutMs); }
 export function close(): Promise<void> { return client.close(); }
 
@@ -18,6 +19,7 @@ export const agentry = {
   init,
   capture,
   track,
+  log,
   flush,
   close,
   /** Expose for advanced wiring (manual sendBeacon flush, etc.) */
