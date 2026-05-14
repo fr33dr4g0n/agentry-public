@@ -192,6 +192,89 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     },
   },
   {
+    name: "agentry_upload_sourcemap",
+    description:
+      "Upload a single .map file to agentry's storage. Use this for ad-hoc uploads from the agent " +
+      "(e.g. uploading the latest local build's maps before investigating). For production deploys, " +
+      "prefer the curl loop in the install guide's upload_sourcemaps_for_minified_stacks step so " +
+      "the upload runs in CI on every deploy. " +
+      "Wraps POST /v1/sourcemaps/{project_id}/. Same Bearer-DSN auth (uses the DSN cached locally " +
+      "by agentry_create_project).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: {
+          type: "string",
+          description: "Project id. If omitted, uses the local default project.",
+        },
+        map_file_path: {
+          type: "string",
+          description:
+            "Absolute path to the .map file on disk. The MCP reads it and POSTs the contents.",
+        },
+        source_url: {
+          type: "string",
+          description:
+            "Pathname the minified .js is served at (e.g. /_next/static/chunks/abc.js). MUST " +
+            "match what the browser reports in stack-frame `filename` for lookup to work.",
+        },
+        release_id: {
+          type: "string",
+          description:
+            "Deploy SHA (or any release identifier). Defaults to `default`. Match this to the " +
+            "deploy_sha on the events whose stacks you want to translate.",
+        },
+      },
+      required: ["map_file_path", "source_url"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_list_sourcemaps",
+    description:
+      "List sourcemaps uploaded for a project, optionally filtered by release_id. Wraps " +
+      "GET /v1/sourcemaps/{project_id}/. Useful for verifying an upload ran, or for finding which " +
+      "deploys have maps stored.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: {
+          type: "string",
+          description: "Project id. If omitted, uses the local default project.",
+        },
+        release_id: {
+          type: "string",
+          description: "Filter to a specific release/deploy SHA. Optional.",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_delete_sourcemaps",
+    description:
+      "Delete every sourcemap uploaded under a specific release_id. Use this to clean up after an " +
+      "old deploy's maps are no longer needed (cases pinned to that deploy_sha will lose " +
+      "translation capability — that's intentional, run it only when you're sure). Wraps DELETE " +
+      "/v1/sourcemaps/{project_id}/?release_id=…. Refuses to operate without an explicit release_id " +
+      "(no bulk wipes by accident).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: {
+          type: "string",
+          description: "Project id. If omitted, uses the local default project.",
+        },
+        release_id: {
+          type: "string",
+          description: "The release/deploy SHA whose maps to delete. Required — no default.",
+        },
+      },
+      required: ["release_id"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "agentry_resolve_case",
     description:
       "Mark a case as resolved. Pass an optional summary and PR url so the team has audit trail.",
@@ -922,6 +1005,23 @@ export async function dispatchTool(
           case_id: String(a.case_id ?? ""),
           event_id: a.event_id ? String(a.event_id) : undefined,
           release_id: a.release_id ? String(a.release_id) : undefined,
+        });
+      case "agentry_upload_sourcemap":
+        return await handleUploadSourcemap({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          map_file_path: String(a.map_file_path ?? ""),
+          source_url: String(a.source_url ?? ""),
+          release_id: a.release_id ? String(a.release_id) : undefined,
+        });
+      case "agentry_list_sourcemaps":
+        return await handleListSourcemaps({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          release_id: a.release_id ? String(a.release_id) : undefined,
+        });
+      case "agentry_delete_sourcemaps":
+        return await handleDeleteSourcemaps({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          release_id: String(a.release_id ?? ""),
         });
       case "agentry_resolve_case":
         return await handleResolveCase({
@@ -1657,6 +1757,175 @@ function normalizeSourceUrl(file: string | undefined | null): string | null {
 // api_key — is what authenticates sourcemap blob fetches.
 function lookupDsn(cfg: ReturnType<typeof loadConfig>, projectId: string): string | null {
   return cfg.projects?.[projectId]?.dsn ?? null;
+}
+
+// MCP wrappers over POST/GET/DELETE /v1/sourcemaps/. Provided for parity with
+// the HTTP API — every storage op exposed via curl is also exposed as an MCP
+// tool so agents don't have to drop to bash for ad-hoc uploads. Translation
+// stays MCP-only (agentry_unmangle_stack) because the code that runs should
+// be auditable, not server-side.
+
+async function handleUploadSourcemap(input: {
+  project_id?: string;
+  map_file_path: string;
+  source_url: string;
+  release_id?: string;
+}): Promise<ToolResult> {
+  if (!input.map_file_path) {
+    return {
+      error: {
+        code: "missing_map_file_path",
+        message: "map_file_path is required",
+        next_action: "Pass an absolute path to the .map file (typically under dist/, .next/, etc).",
+      },
+    };
+  }
+  if (!input.source_url) {
+    return {
+      error: {
+        code: "missing_source_url",
+        message: "source_url is required",
+        next_action:
+          "Pass the pathname the minified .js is served at (e.g. /_next/static/chunks/abc.js). " +
+          "Must match what the browser reports in stack-frame `filename` for lookup to work.",
+      },
+    };
+  }
+  const cfg = loadConfig();
+  const picked = pickProject(cfg, input.project_id);
+  if (!picked) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project_id given and no default project set.",
+        next_action:
+          "Either pass project_id, or call agentry_create_project to mint one (which becomes default).",
+      },
+    };
+  }
+  const dsn = lookupDsn(cfg, picked.id);
+  if (!dsn) {
+    return {
+      error: {
+        code: "no_dsn",
+        message: `No DSN cached locally for project ${picked.id}`,
+        next_action:
+          "Re-run agentry_create_project for this project to re-cache the DSN.",
+      },
+    };
+  }
+  // Use dynamic import so MCP cold-start for non-sourcemap tools doesn't pay
+  // for node:fs even though it's free in CommonJS land.
+  const fs = await import("node:fs");
+  let body: string;
+  try {
+    body = fs.readFileSync(input.map_file_path, "utf8");
+  } catch (err) {
+    return {
+      error: {
+        code: "read_failed",
+        message: `Could not read ${input.map_file_path}: ${(err as Error).message}`,
+        next_action: "Verify the path exists and is readable. Use an absolute path.",
+      },
+    };
+  }
+  const resp = await api.uploadSourcemap(cfg, picked.id, dsn, {
+    releaseId: input.release_id,
+    sourceUrl: input.source_url,
+    body,
+  });
+  return {
+    ...resp,
+    next_action:
+      "Sourcemap stored. Confirm with agentry_list_sourcemaps; once you have errors with " +
+      "matching deploy_sha, agentry_unmangle_stack will translate the minified frames.",
+  };
+}
+
+async function handleListSourcemaps(input: {
+  project_id?: string;
+  release_id?: string;
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const picked = pickProject(cfg, input.project_id);
+  if (!picked) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project_id given and no default project set.",
+        next_action:
+          "Either pass project_id, or call agentry_create_project to mint one (which becomes default).",
+      },
+    };
+  }
+  const dsn = lookupDsn(cfg, picked.id);
+  if (!dsn) {
+    return {
+      error: {
+        code: "no_dsn",
+        message: `No DSN cached locally for project ${picked.id}`,
+        next_action:
+          "Re-run agentry_create_project for this project to re-cache the DSN.",
+      },
+    };
+  }
+  const resp = await api.listSourcemaps(cfg, picked.id, dsn, {
+    releaseId: input.release_id,
+  });
+  return {
+    ...resp,
+    next_action:
+      resp.count === 0
+        ? "No sourcemaps uploaded yet. Walk the install guide's upload_sourcemaps_for_minified_stacks " +
+          "step to wire upload into CI, or use agentry_upload_sourcemap for an ad-hoc upload."
+        : "Confirm the release_ids here match the deploy_sha on the cases you're investigating. " +
+          "If they don't, the agent_unmangle_stack tool will return frames with `unmangled: false`.",
+  };
+}
+
+async function handleDeleteSourcemaps(input: {
+  project_id?: string;
+  release_id: string;
+}): Promise<ToolResult> {
+  if (!input.release_id) {
+    return {
+      error: {
+        code: "missing_release_id",
+        message: "release_id is required — refuses to bulk-delete a project's sourcemaps.",
+        next_action: "Pass the specific release_id you want cleaned up.",
+      },
+    };
+  }
+  const cfg = loadConfig();
+  const picked = pickProject(cfg, input.project_id);
+  if (!picked) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project_id given and no default project set.",
+        next_action: "Pass project_id explicitly.",
+      },
+    };
+  }
+  const dsn = lookupDsn(cfg, picked.id);
+  if (!dsn) {
+    return {
+      error: {
+        code: "no_dsn",
+        message: `No DSN cached locally for project ${picked.id}`,
+        next_action: "Re-run agentry_create_project for this project to re-cache the DSN.",
+      },
+    };
+  }
+  const resp = await api.deleteSourcemaps(cfg, picked.id, dsn, {
+    releaseId: input.release_id,
+  });
+  return {
+    ...resp,
+    next_action:
+      "Sourcemaps for that release_id removed. Cases pinned to that deploy_sha will no longer " +
+      "translate. Verify with agentry_list_sourcemaps.",
+  };
 }
 
 async function handleResolveCase(input: {

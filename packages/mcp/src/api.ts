@@ -110,12 +110,12 @@ export async function apiFetch<T>(
   const url = opts.absoluteUrl ?? `${cfg.server_url.replace(/\/$/, "")}${pathOrUrl}`;
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "user-agent": "agentry-mcp/0.0.6",
+    "user-agent": "agentry-mcp/0.0.7",
   };
   if (!opts.skipAuth) {
     if (opts.dsnAuth) {
       headers["x-sentry-auth"] =
-        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.6`;
+        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.7`;
     } else if (cfg.api_key) {
       headers["authorization"] = `Bearer ${cfg.api_key}`;
     }
@@ -259,6 +259,87 @@ export const api = {
       );
     }
     return await res.text();
+  },
+  // Upload a sourcemap blob. Auth is the project's DSN (same key as ingest).
+  // The `body` is the raw .map JSON; the API stores it under (project_id,
+  // release_id, source_url) for later retrieval via getSourcemapBlob.
+  async uploadSourcemap(
+    cfg: AgentryConfig,
+    projectId: string,
+    publicKey: string,
+    opts: { releaseId?: string; sourceUrl: string; body: string }
+  ): Promise<{
+    id: string;
+    project_id: string;
+    release_id: string;
+    source_url: string;
+    size_bytes: number;
+  }> {
+    const baseUrl = cfg.server_url.replace(/\/$/, "");
+    const qs = new URLSearchParams({
+      source_url: opts.sourceUrl,
+      ...(opts.releaseId ? { release_id: opts.releaseId } : {}),
+    });
+    const url = `${baseUrl}/v1/sourcemaps/${encodeURIComponent(projectId)}/?${qs}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${publicKey}`,
+        "content-type": "application/json",
+        "user-agent": "agentry-mcp/0.0.7",
+      },
+      body: opts.body,
+    });
+    const text = await res.text();
+    const parsed = text ? JSON.parse(text) : {};
+    if (!res.ok) throw buildError(res.status, parsed);
+    return parsed as Awaited<ReturnType<typeof api.uploadSourcemap>>;
+  },
+  async listSourcemaps(
+    cfg: AgentryConfig,
+    projectId: string,
+    publicKey: string,
+    opts: { releaseId?: string } = {}
+  ): Promise<{
+    project_id: string;
+    count: number;
+    sourcemaps: Array<{
+      id: string;
+      release_id: string;
+      source_url: string;
+      size_bytes: number;
+      uploaded_at: number;
+    }>;
+  }> {
+    const baseUrl = cfg.server_url.replace(/\/$/, "");
+    const qs = opts.releaseId ? `?release_id=${encodeURIComponent(opts.releaseId)}` : "";
+    const url = `${baseUrl}/v1/sourcemaps/${encodeURIComponent(projectId)}/${qs}`;
+    const res = await fetch(url, {
+      headers: { authorization: `Bearer ${publicKey}` },
+    });
+    const text = await res.text();
+    const parsed = text ? JSON.parse(text) : {};
+    if (!res.ok) throw buildError(res.status, parsed);
+    return parsed as Awaited<ReturnType<typeof api.listSourcemaps>>;
+  },
+  async deleteSourcemaps(
+    cfg: AgentryConfig,
+    projectId: string,
+    publicKey: string,
+    opts: { releaseId: string }
+  ): Promise<{ project_id: string; release_id: string; deleted: number }> {
+    const baseUrl = cfg.server_url.replace(/\/$/, "");
+    const url =
+      `${baseUrl}/v1/sourcemaps/${encodeURIComponent(projectId)}/` +
+      `?release_id=${encodeURIComponent(opts.releaseId)}`;
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${publicKey}` },
+    });
+    const text = await res.text();
+    const parsed = text ? JSON.parse(text) : {};
+    if (!res.ok) throw buildError(res.status, parsed);
+    return parsed as Awaited<ReturnType<typeof api.deleteSourcemaps>>;
   },
   // Log ingest. A log with name/message/stack (or a Sentry-shape exception)
   // gets fingerprinted and rolled into a Case. Uses DSN as auth (Bearer or

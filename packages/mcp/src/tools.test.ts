@@ -398,6 +398,7 @@ describe("tool list completeness", () => {
         "agentry_create_alert",
         "agentry_create_project",
         "agentry_delete_alert",
+        "agentry_delete_sourcemaps",
         "agentry_delete_webhook",
         "agentry_evaluate_alert",
         "agentry_get_case",
@@ -410,6 +411,7 @@ describe("tool list completeness", () => {
         "agentry_list_feedback",
         "agentry_list_projects",
         "agentry_list_recipes",
+        "agentry_list_sourcemaps",
         "agentry_list_webhooks",
         "agentry_login",
         "agentry_mark_spurious",
@@ -429,6 +431,7 @@ describe("tool list completeness", () => {
         "agentry_test_webhook",
         "agentry_track_test_event",
         "agentry_unmangle_stack",
+        "agentry_upload_sourcemap",
         "agentry_verify_install",
       ].sort()
     );
