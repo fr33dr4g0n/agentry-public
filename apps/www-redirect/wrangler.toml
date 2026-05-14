@@ -1,0 +1,10 @@
+name = "agentry-www-redirect"
+main = "src/index.ts"
+compatibility_date = "2025-05-01"
+
+# Permanent 301 of every www.agentry.sh request to the apex agentry.sh.
+# Worker Route intercepts at the edge — DNS still resolves via the existing
+# proxied record left by Pages, but this Worker runs before anything else.
+routes = [
+  { pattern = "www.agentry.sh/*", zone_name = "agentry.sh" },
+]
