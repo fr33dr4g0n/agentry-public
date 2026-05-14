@@ -741,6 +741,47 @@ function verifySteps(): InstallGuideStep[] {
   ];
 }
 
+// Penultimate step: after verify_install passes, the agent should pause once
+// to check in with the user — surface any gaps in the inventory, and ask ONE
+// batched question about anything the agent couldn't auto-detect (e.g., a
+// referral flow that lives in an external CRM, plan tiers the agent couldn't
+// infer, custom internal events not visible in the code). This is the only
+// place in the install where the agent should ask the user a question. After
+// this, it moves into suggest_next_builds without asking permission.
+function checkinWithUserStep(): InstallGuideStep {
+  return {
+    id: "checkin_with_user",
+    title: "Confirm coverage with the user — ONE batched question about anything missing",
+    why:
+      "By this point: errors, analytics, and deploys are wired; verify_install has reported all " +
+      "three ✅. But the agent only knows what it could read from the code. There may be things " +
+      "outside the repo (an external billing tool, referral flow that runs in a CRM, custom " +
+      "events the team wants tracked, ambiguous plan tiers, anything the agent inferred poorly). " +
+      "Pause exactly ONCE before moving on to dashboards/automations. Surface the inventory you " +
+      "actually instrumented, flag uncertainties, and ask the user a single batched question. " +
+      "Then keep going — do NOT ask permission to build dashboards in the next step.",
+    action: "manual",
+    file_hint:
+      "Format the message to the user as: " +
+      "  1. ✅ Errors: <count of error pathways wired>. " +
+      "  2. ✅ Analytics: <count of events wired by AARRR layer> (Acquisition: N, Activation: N, " +
+      "     Retention: N, Referral: N, Revenue: N). List the event names so the user can spot omissions. " +
+      "  3. ✅ Deploys: <option A startup-time or B CI step> wired against <env var name(s)>. " +
+      "Then ONE batched question that covers: (a) any AARRR layer with zero events — confirm " +
+      "the user wants to skip it or point to where it lives, (b) any inferred plan/tier/role " +
+      "structure that should be verified, (c) any external system the agent saw mentioned but " +
+      "couldn't read (e.g., 'I saw a reference to a HubSpot integration — should I capture " +
+      "lead events from that, or is it already wired?'), (d) what the user calls their " +
+      "'activation' moment if the agent had to guess. " +
+      "Keep the message under 200 words. Use a numbered list. No more than 5 questions total — " +
+      "fewer is better.",
+    validate:
+      "The user has either answered, said 'looks good, move on', or pointed at a missing source. " +
+      "If they pointed at something missing, instrument it immediately (don't queue it for later). " +
+      "Then proceed to suggest_next_builds without asking further permission.",
+  };
+}
+
 // Final step: once events are flowing, surface high-value next builds.
 // This is the bridge from "install complete" to "now go build something with it".
 // The point: the agent should inspect what's actually being tracked and propose
@@ -984,6 +1025,7 @@ export function buildInstallGuide(framework: Framework, signalTypes: string[]): 
   }
 
   steps.push(...verifySteps());
+  steps.push(checkinWithUserStep());
   steps.push(suggestNextBuildsStep());
 
   const pitfalls = isClient
@@ -1550,12 +1592,13 @@ agentry_send deploys '{"sha": "'"$GITHUB_SHA"'", "branch": "'"$GITHUB_REF_NAME"'
   },
 };
 
-// Language-keyed snippets for the analytics + deploy wiring steps. Kept small;
-// these are illustrative — the agent's job is to lift the patterns into the
-// real codebase, not paste verbatim. Default to Python/requests-shaped code
-// when the framework matches one of the helper-based languages; the agent
-// rewrites for Ruby/Go/PHP/etc. trivially using the same Agentry.send shape.
-function revenueAnalyticsSnippet(framework: Framework): string {
+// Language-keyed snippets for the analytics + deploy wiring steps. Comprehensive
+// AARRR catalog so the agent has a full instrumentation reference; the agent's
+// job is to lift the patterns into the real codebase using THIS product's
+// vocabulary, not paste verbatim. Same shape for all helper-based languages
+// (`agentry.send("analytics", {...})`); we ship a few language variants so
+// the agent has idiomatic templates per stack.
+function aarrrCatalogSnippet(framework: Framework): string {
   // One snippet covers all helper-based languages — the call shape is
   // identical (`agentry.send("analytics", {...})`). Comments name the
   // canonical events. Language-specific syntax differs but the events do not.
@@ -1606,60 +1649,169 @@ case "invoice.payment_failed":
 agentry.Send("analytics", map[string]any{"event": "signup_completed",
     "distinct_id": user.ID, "properties": map[string]any{"plan": "free"}})`;
   }
-  // Python is the most common case — use that shape for everything else
-  // (php/java/dotnet/rust/elixir agents adapt trivially).
-  return `# Stripe webhook handler (FastAPI / Flask / Django — same call shape)
-# Fire BEFORE returning 200 to Stripe so the event is recorded even if the
-# caller retries. Wrap in try/except — analytics failures must not break the webhook.
-if event.type == "checkout.session.completed":
-    agentry.send("analytics", {
-        "event": "subscription_started",
-        "distinct_id": customer_id,
-        "properties": {"plan": plan_name, "amount_usd": amount / 100.0, "currency": currency},
-    })
-elif event.type == "customer.subscription.updated":
-    agentry.send("analytics", {
-        "event": "subscription_upgraded",
-        "distinct_id": customer_id,
-        "properties": {"from_plan": old_plan, "to_plan": new_plan, "mrr_delta_usd": delta},
-    })
-elif event.type == "customer.subscription.deleted":
-    agentry.send("analytics", {
-        "event": "subscription_cancelled",
-        "distinct_id": customer_id,
-        "properties": {"plan": plan_name, "reason": cancellation_reason},
-    })
-elif event.type == "invoice.payment_succeeded":
-    agentry.send("analytics", {
-        "event": "payment_succeeded",
-        "distinct_id": customer_id,
-        "properties": {"amount_usd": amount / 100.0, "plan": plan_name},
-    })
-elif event.type == "invoice.payment_failed":
-    agentry.send("analytics", {
-        "event": "payment_failed",
-        "distinct_id": customer_id,
-        "properties": {"amount_usd": amount / 100.0, "reason": failure_reason},
-    })
+  // Python catalog — comprehensive AARRR reference. Other helper-based
+  // languages (PHP, Java, .NET, Rust, Elixir) adapt the shape trivially using
+  // their helper's idiomatic call signature. The events themselves are
+  // universal; rename them to THIS product's vocabulary.
+  return `# ============================================================
+# COMPREHENSIVE AARRR CATALOG — adapt event names to THIS app's vocabulary.
+# The patterns below cover ~25 events across the 5 AARRR layers. Don't paste
+# verbatim — translate each one to the equivalent action in this codebase.
+# Default lens is AARRR (works for ~80% of apps). If investigate_app_structure
+# picked a different lens (HEART / NorthStar+Drivers / DAU+Stickiness / B2B
+# funnel / PLG / JTBD / API tool / Marketplace), restructure around its layers.
+# ============================================================
 
-# Primary user actions — fire AFTER successful DB commit, BEFORE response:
+# ============================================================
+# ACQUISITION — where users come from
+# ============================================================
+# First-touch attribution MUST be captured on signup_completed. Read utm_*,
+# referrer, and landing_path from the session/cookie set at landing time.
+
 agentry.send("analytics", {
     "event": "signup_completed",
     "distinct_id": user.id,
-    "properties": {"source": utm_source, "plan": "free"},
-})
-agentry.send("analytics", {
-    "event": "project_created",
-    "distinct_id": user.id,
-    "properties": {"project_id": project.id, "template": template_name},
+    "properties": {
+        "method": "github",                  # github / email / google / sso
+        "plan": "free",
+        # First-touch attribution
+        "utm_source": session.utm_source,
+        "utm_medium": session.utm_medium,
+        "utm_campaign": session.utm_campaign,
+        "referrer": session.referrer,
+        "landing_path": session.landing_path,
+        # Behavioral signals
+        "signup_duration_ms": int((now() - session.first_seen_at) * 1000),
+        "pages_before_signup": session.page_views,
+    },
 })
 
-# Onboarding step events — fire one per step so the funnel is queryable:
-agentry.send("analytics", {
-    "event": "onboarding_step_completed",
-    "distinct_id": user.id,
-    "properties": {"step": "connect_repo", "step_number": 2},
-})`;
+# Pre-conversion intent — events that explain WHY signups happen or don't.
+agentry.send("analytics", {"event": "cta_clicked", "distinct_id": did,
+    "properties": {"cta_id": "hero_signup", "page": "/", "variant": "v2"}})
+agentry.send("analytics", {"event": "paywall_viewed", "distinct_id": user.id,
+    "properties": {"reason": "feature_locked", "feature": "team_members", "current_plan": "free"}})
+
+# ============================================================
+# ACTIVATION — first happy experience (the moment the user gets value)
+# ============================================================
+# Track the entire onboarding flow at fine granularity, plus the activation
+# moment. Define "activated" once per product — pick the action that
+# correlates with retention. Examples: first_export, first_message_sent,
+# first_project_published, first_invite_accepted.
+
+agentry.send("analytics", {"event": "onboarding_step_started", "distinct_id": user.id,
+    "properties": {"step": "create_workspace", "step_index": 1}})
+agentry.send("analytics", {"event": "onboarding_step_completed", "distinct_id": user.id,
+    "properties": {"step": "create_workspace", "step_index": 1, "duration_ms": 8400}})
+agentry.send("analytics", {"event": "onboarding_skipped", "distinct_id": user.id,
+    "properties": {"step": "invite_team", "step_index": 3}})
+agentry.send("analytics", {"event": "onboarding_completed", "distinct_id": user.id,
+    "properties": {"duration_ms": 142_000, "steps_done": 5, "steps_skipped": 1}})
+
+agentry.send("analytics", {"event": "activated", "distinct_id": user.id,
+    "properties": {
+        "activation_type": "first_export",   # pick THIS product's value moment
+        "time_to_activation_ms": int((now() - user.created_at).total_seconds() * 1000),
+        "plan": user.plan,
+    }})
+
+# ============================================================
+# RETENTION — do they come back? engagement signals
+# ============================================================
+agentry.send("analytics", {"event": "session_started", "distinct_id": user.id,
+    "properties": {"workspace_id": w.id, "device": "desktop", "platform": "web"}})
+agentry.send("analytics", {"event": "daily_active", "distinct_id": user.id,
+    "properties": {"plan": user.plan, "days_since_signup": 14}})
+
+# Entity lifecycle — every meaningful noun in your product (project / workspace /
+# document / message / order / post / whatever THIS app's entities are).
+agentry.send("analytics", {"event": "project_created", "distinct_id": user.id,
+    "properties": {"template_id": t.id if t else None, "workspace_id": w.id}})
+agentry.send("analytics", {"event": "project_updated", "distinct_id": user.id,
+    "properties": {"project_id": p.id, "fields_changed": ["name", "visibility"]}})
+agentry.send("analytics", {"event": "project_published", "distinct_id": user.id,
+    "properties": {"project_id": p.id, "visibility": "public"}})
+agentry.send("analytics", {"event": "project_archived", "distinct_id": user.id,
+    "properties": {"project_id": p.id, "days_active": 47}})
+agentry.send("analytics", {"event": "project_deleted", "distinct_id": user.id,
+    "properties": {"project_id": p.id, "days_active": 14}})
+
+# Feature usage — every meaningful feature, not just headline ones.
+agentry.send("analytics", {"event": "feature_used", "distinct_id": user.id,
+    "properties": {"feature": "export_csv", "first_use": True}})
+agentry.send("analytics", {"event": "integration_connected", "distinct_id": user.id,
+    "properties": {"provider": "slack", "scopes": ["chat:write"]}})
+agentry.send("analytics", {"event": "integration_error", "distinct_id": user.id,
+    "properties": {"provider": "slack", "error": "token_revoked"}})
+
+# ============================================================
+# REFERRAL — virality and team growth
+# ============================================================
+agentry.send("analytics", {"event": "invite_sent", "distinct_id": inviter.id,
+    "properties": {"invitee_email_hash": hash(email), "workspace_id": w.id, "role": "member"}})
+agentry.send("analytics", {"event": "invite_accepted", "distinct_id": invitee.id,
+    "properties": {"workspace_id": w.id, "invited_by": inviter.id}})
+agentry.send("analytics", {"event": "invite_expired", "distinct_id": inviter.id,
+    "properties": {"invitee_email_hash": hash(email), "days_open": 7}})
+agentry.send("analytics", {"event": "share_link_created", "distinct_id": user.id,
+    "properties": {"resource_type": "project", "resource_id": p.id}})
+agentry.send("analytics", {"event": "share_link_visited", "distinct_id": visitor_id,
+    "properties": {"resource_type": "project", "resource_id": p.id, "viewer_is_signed_in": False}})
+agentry.send("analytics", {"event": "public_link_signup", "distinct_id": newUser.id,
+    "properties": {"from_resource_type": "project", "from_resource_id": p.id}})
+
+# ============================================================
+# REVENUE — the highest-value events. Track EVERY state transition.
+# ============================================================
+# Money events are the most painful to miss retroactively. You CANNOT
+# reconstruct historical MRR, cohorts, or churn rates if these weren't
+# tracked at the time. Capture them NOW even if no billing dashboard exists.
+#
+# WHERE: Stripe / Paddle / LemonSqueezy / Chargebee / etc. webhook handler.
+# Fire BEFORE returning 200 to the processor so the event is recorded even
+# if the caller retries. Wrap in try/except — analytics failures must not
+# break the webhook.
+
+# Pre-conversion funnel
+agentry.send("analytics", {"event": "trial_started", "distinct_id": user.id,
+    "properties": {"plan": "pro", "trial_days": 14, "source": "paywall"}})
+agentry.send("analytics", {"event": "trial_ended", "distinct_id": user.id,
+    "properties": {"plan": "pro", "converted": False, "days_used": 14}})
+agentry.send("analytics", {"event": "plan_selected", "distinct_id": user.id,
+    "properties": {"plan": "pro", "billing_cycle": "monthly", "source": "pricing_page"}})
+agentry.send("analytics", {"event": "checkout_started", "distinct_id": user.id,
+    "properties": {"plan": "pro", "amount_cents": 1900, "currency": "usd"}})
+agentry.send("analytics", {"event": "payment_method_added", "distinct_id": user.id,
+    "properties": {"type": "card", "brand": "visa", "last4": "4242"}})
+
+# Stripe webhook handler — case branch each event.type into a tracked event.
+if event.type == "checkout.session.completed":
+    agentry.send("analytics", {"event": "subscription_created", "distinct_id": customer_id,
+        "properties": {"plan": plan_name, "amount_cents": amount, "billing_cycle": "monthly"}})
+elif event.type == "invoice.payment_succeeded":
+    agentry.send("analytics", {"event": "payment_succeeded", "distinct_id": customer_id,
+        "properties": {"amount_cents": amount, "currency": currency, "invoice_id": inv.id}})
+elif event.type == "invoice.payment_failed":
+    agentry.send("analytics", {"event": "payment_failed", "distinct_id": customer_id,
+        "properties": {"amount_cents": amount, "reason": failure_code, "attempt": attempt}})
+elif event.type == "customer.subscription.updated":
+    # Diff plan to decide upgrade vs downgrade vs renewal:
+    if new_plan_rank > old_plan_rank:
+        agentry.send("analytics", {"event": "subscription_upgraded", "distinct_id": customer_id,
+            "properties": {"from_plan": old_plan, "to_plan": new_plan, "mrr_delta_cents": delta}})
+    elif new_plan_rank < old_plan_rank:
+        agentry.send("analytics", {"event": "subscription_downgraded", "distinct_id": customer_id,
+            "properties": {"from_plan": old_plan, "to_plan": new_plan, "mrr_delta_cents": delta}})
+    else:
+        agentry.send("analytics", {"event": "subscription_renewed", "distinct_id": customer_id,
+            "properties": {"plan": new_plan, "amount_cents": amount}})
+elif event.type == "customer.subscription.deleted":
+    agentry.send("analytics", {"event": "subscription_canceled", "distinct_id": customer_id,
+        "properties": {"plan": plan_name, "reason_code": cancellation_reason, "days_active": days_active}})
+elif event.type == "charge.refunded":
+    agentry.send("analytics", {"event": "refund_issued", "distinct_id": customer_id,
+        "properties": {"amount_cents": amount, "reason": refund_reason}})`;
 }
 
 function deploySnippet(framework: Framework): string {
@@ -1737,32 +1889,70 @@ function buildHttpGuide(framework: Framework, signalTypes: Set<string>): Install
   }
   const steps: InstallGuideStep[] = [];
 
+  // Deep-investigation step — same shape as the Node path. Without this, the
+  // event inventory ends up generic ("page_view + signup_completed") and the
+  // agent has nothing real to investigate later. Spend the 5–10 minutes.
   steps.push({
     id: "investigate_app_structure",
     title: "Investigate the app structure BEFORE instrumenting anything",
     why:
       "agentry is only as useful as the events you send it. The wrong move is to slap a few " +
       "generic events on and ship — three months later you'll wish you'd tracked revenue, " +
-      "or feature usage, or signup-flow drop-off, but the data isn't there. Spend 5-10 " +
+      "or feature usage, or signup-flow drop-off, but the data isn't there. Spend 5–10 " +
       "minutes reading the codebase first so the instrumentation you add is comprehensive, " +
       "not boilerplate.",
     action: "manual",
     file_hint:
-      "Read the dependency manifest (requirements.txt / Gemfile / go.mod / etc.) to confirm the framework. " +
+      "Read the dependency manifest (requirements.txt / Gemfile / go.mod / composer.json / etc.) " +
+      "to confirm the framework. " +
       "Walk the source — note the route structure, the auth flow, the key user actions, " +
-      "the integrations (payment provider, Slack, CRM, third-party APIs), background jobs, " +
-      "and webhook endpoints. Look at the DB schema or ORM models — what entities exist " +
-      "(users, subscriptions, workspaces, projects)? Each one's lifecycle is probably worth tracking. " +
-      "Note where errors are caught and silently ignored — those are missing breadcrumbs.",
+      "the integrations (Stripe/Paddle/payment provider, Slack, CRM, third-party APIs), " +
+      "background jobs/cron, the webhook endpoints (both incoming and outgoing). " +
+      "Look at the DB schema or ORM models — what entities exist (users, subscriptions, " +
+      "workspaces, projects, posts, etc.)? Each one's create/update/delete is probably worth " +
+      "tracking. " +
+      "Note where errors are caught and silently ignored — those are missing breadcrumbs. " +
+      "Read README.md / docs/ for the product framing. Look at landing/pricing pages if they " +
+      "exist for plan structure and value props.",
     validate:
-      "You should be able to answer all of these before writing any agentry calls: " +
+      "You must be able to answer ALL of these before writing any agentry calls; write the " +
+      "answers to agentry_memory.md so subsequent steps are grounded in THIS app, not a " +
+      "generic template: " +
       "(1) what does this app do, in one sentence. " +
-      "(2) what are the 5-15 user actions that matter most. " +
-      "(3) where does money flow — every signup, upgrade, downgrade, cancellation, refund, " +
-      "payment success/failure should have a tracked event. " +
-      "(4) what external services does it depend on and where can they fail. " +
-      "(5) which entities have lifecycles (create / update / delete / state-transition) worth tracking. " +
-      "If you can't answer these confidently, read more before instrumenting.",
+      "(2) what product category does it fit — B2C/B2B SaaS, consumer mobile, marketplace, " +
+      "e-commerce, developer tool / API, games, content / media, internal tool, single-purchase " +
+      "commerce, open-source / community, enterprise sales? Pick the metrics framework that " +
+      "fits best. Default is AARRR (works for ~80% of apps). Pick a different lens only if " +
+      "AARRR clearly doesn't fit. Frameworks available: " +
+      "  • AARRR (Pirate Metrics) — Acquisition, Activation, Retention, Referral, Revenue. " +
+      "    Default for B2C/B2B SaaS, consumer apps, marketplaces, e-commerce. " +
+      "  • HEART (Google) — Happiness (NPS, CSAT, ratings), Engagement (sessions, depth), " +
+      "    Adoption (new feature uptake), Retention (return rate), Task Success (completion " +
+      "    rate, error-free time). Good for UX-driven products, content/media, internal tools. " +
+      "  • North Star + Drivers — one headline metric (e.g. 'weekly active workspaces') plus " +
+      "    3–5 driver events that feed into it. Good for mature products with one clear " +
+      "    value moment. " +
+      "  • DAU/MAU + Stickiness — DAU, MAU, DAU/MAU ratio, session length, session count, " +
+      "    cohort retention by Day-1/7/30. Good for games, social, content, communication apps. " +
+      "  • B2B sales funnel — Lead → MQL → SQL → Opportunity → Closed-Won, with contract value " +
+      "    + cycle time properties. Good for enterprise sales-led products. " +
+      "  • PLG (Product-Led Growth) — Acquisition → Time-to-Value → Activation → " +
+      "    Habit → Expansion → Advocacy. Good for self-serve B2B with usage-based pricing. " +
+      "  • JTBD (Jobs-to-be-Done) — Job Started → Job Progress → Job Completed → Job Abandoned, " +
+      "    with job_type property. Good for tool-shaped products (calculators, generators, IDEs). " +
+      "  • API / Developer Tool — api_call_made (with endpoint, status, latency, token_id), " +
+      "    key_minted, key_rotated, rate_limit_hit, quota_exceeded. " +
+      "  • Marketplace Two-Sided — same lens (AARRR or PLG) applied separately to supply (sellers, " +
+      "    creators) and demand (buyers, viewers), tracked with `side: 'supply' | 'demand'` property. " +
+      "(3) what are the 10–20 user actions that matter most for THIS app specifically " +
+      "(use the chosen lens as a checklist, but the actual event names should match THIS " +
+      "product's vocabulary — not a generic 'feature_used'). " +
+      "(4) where does money flow — every signup, upgrade, downgrade, cancellation, refund, " +
+      "payment success/failure should have a tracked event. If the app isn't monetized yet, " +
+      "still track the equivalent value-moments (e.g. for an open-source project: " +
+      "star_added, contributor_first_pr, sponsor_added). " +
+      "(5) what external services does it depend on and where can they fail. " +
+      "(6) which entities have lifecycles (create / update / delete / state-transition) worth tracking.",
   });
 
   // Loud anti-pattern callout. Agents see "AGENTRY_DSN" and reach for
@@ -1862,59 +2052,85 @@ function buildHttpGuide(framework: Framework, signalTypes: Set<string>): Install
 
   if (signalTypes.has("analytics")) {
     steps.push({
-      id: "inventory_revenue_and_key_events",
-      title: "REQUIRED: inventory revenue + key user actions BEFORE instrumenting analytics",
+      id: "inventory_events_by_lens",
+      title: "REQUIRED: build the event inventory grouped by your chosen metrics lens",
       why:
         "Analytics events are NOT optional — they're a contracted part of the install. The user " +
-        "expects: every revenue-adjacent action, every primary user action, every onboarding " +
-        "step. Skipping this gives them 'errors only' which is half the product. Before writing " +
-        "any `track()` call, build a concrete event inventory grounded in THIS codebase — not a " +
-        "generic template. Money first, then primary actions, then state transitions.",
+        "expects comprehensive instrumentation across every layer of the lens chosen in " +
+        "`investigate_app_structure` (default: AARRR). Skipping this gives them 'errors only' " +
+        "which is half the product. Before writing any `agentry.send('analytics', ...)` call, " +
+        "build a concrete event inventory grounded in THIS codebase — at least 15–25 distinct " +
+        "events across the lens layers, named in THIS product's vocabulary.",
       action: "manual",
       file_hint:
-        "REVENUE: grep the codebase for `stripe`, `paddle`, `lemonsqueezy`, `chargebee`, " +
-        "`braintree`, `paypal`, subscription/billing/checkout routes, webhook handlers for " +
-        "`charge.succeeded` / `customer.subscription.*` / `invoice.payment_*`. If any payment " +
-        "processor exists, you MUST instrument: signup_completed, subscription_started, " +
-        "subscription_upgraded, subscription_downgraded, subscription_cancelled, payment_succeeded, " +
-        "payment_failed, refund_issued. " +
-        "KEY ACTIONS: re-read your output from `investigate_app_structure` — every entity " +
-        "lifecycle (project_created, workspace_invited, etc.) and every meaningful user action " +
-        "from the route inventory. " +
-        "ONBOARDING: each step of signup → first-value should be its own event so the funnel is " +
-        "queryable.",
+        "RE-READ agentry_memory.md (or your scratch notes from investigate_app_structure) so the " +
+        "inventory is grounded in THIS app — not a generic template. " +
+        "Then walk each LAYER of your chosen lens and list the events you'll instrument: " +
+        "  AARRR DEFAULT: " +
+        "  • ACQUISITION — signup_completed (with utm_source/medium/campaign/referrer captured " +
+        "    at first touch), cta_clicked, paywall_viewed. " +
+        "  • ACTIVATION — onboarding_step_started/completed/skipped, onboarding_completed, " +
+        "    activated (the product's first-value moment: first_export / first_message_sent / " +
+        "    first_project_published — pick the one specific to THIS product). " +
+        "  • RETENTION — session_started, daily_active, plus entity lifecycle: " +
+        "    <entity>_created / _updated / _deleted / _published / _archived, feature_used, " +
+        "    integration_connected / _disconnected / _error. " +
+        "  • REFERRAL — invite_sent, invite_accepted, invite_expired, share_link_created, " +
+        "    share_link_visited, public_link_signup. " +
+        "  • REVENUE (mandatory if a payment processor is in the repo — grep for `stripe`, " +
+        "    `paddle`, `lemonsqueezy`, `chargebee`, `braintree`, `paypal`) — " +
+        "    trial_started/ended, plan_selected, checkout_started, payment_method_added, " +
+        "    payment_succeeded, payment_failed, subscription_created, subscription_upgraded, " +
+        "    subscription_downgraded, subscription_renewed, subscription_canceled, " +
+        "    subscription_reactivated, refund_issued, dunning_email_sent. " +
+        "If you chose a DIFFERENT lens (HEART / North Star+Drivers / DAU+Stickiness / B2B funnel / " +
+        "PLG / JTBD / API tool / Marketplace), build the inventory around its stages instead — " +
+        "the layer names change, the rigor doesn't. " +
+        "ALSO INVENTORY: error context (deploy_sha, environment), background-job " +
+        "outcomes (job_started / job_completed / job_failed with job_type + duration), webhook " +
+        "deliveries, and any third-party API timeouts/errors worth tracking.",
       validate:
-        "Produce a written list of 8–25 events you're about to instrument, grouped as " +
-        "REVENUE / KEY_ACTIONS / ONBOARDING. If a payment processor was detected and you have " +
-        "zero revenue events listed, you are not done with this step — go back. If you have only " +
-        "page_view and signup_completed, you have not done the work; the agent's value comes from " +
-        "the events you instrument here.",
+        "Produce a written list of 15–25+ distinct event names grouped under each layer of your " +
+        "chosen lens. If a payment processor was detected and your REVENUE layer has fewer than " +
+        "5 events, you are not done with this step — go back. If your inventory has only " +
+        "page_view + signup_completed, you have not done the work; the agent's value comes from " +
+        "the events you instrument here. Storage is cheap; missing data is unrecoverable.",
     });
 
     steps.push({
       id: "wire_analytics_events",
-      title: "REQUIRED: instrument the analytics events from your inventory",
+      title: "REQUIRED: instrument every event in your inventory, with rich properties",
       why:
-        "Walk down the inventory from `inventory_revenue_and_key_events` and wire EACH event " +
-        "with a call to the agentry helper. Don't ask the user permission to do this — analytics " +
-        "is part of the install, not a follow-up. Don't stop after one or two events. Storage " +
-        "is cheap; missing data is expensive.",
+        "Walk every entry in the inventory from `inventory_events_by_lens` and wire it with a " +
+        "call to the agentry helper. Don't ask the user permission to do this — analytics is " +
+        "part of the install, not a follow-up. Don't stop after one or two events. Don't stop " +
+        "at REVENUE — RETENTION, REFERRAL, ACTIVATION matter too. " +
+        "RULE: every event carries as many properties as you can reasonably attach (plan, " +
+        "source, variant, ids, counts, timing, feature flags). Properties are how the agent " +
+        "slices the data when the user asks questions later. Over-track now — the agent can " +
+        "filter at query time; it can't invent missing events.",
       action: "edit",
       file_hint:
-        "REVENUE events: hook into your payment processor's webhook handler (Stripe webhook " +
-        "endpoint, Paddle hook, etc.) AND any direct subscription mutation in your code. " +
-        "USER ACTIONS: at the controller/route layer where the action completes successfully — " +
-        "AFTER the DB commit, BEFORE the response is sent. Always pass `distinct_id` (the " +
-        "authenticated user id) so funnels and cohorts work. " +
-        "Be liberal with `properties` — plan name, amount, currency, source, anything the agent " +
-        "might want to slice by later.",
-      code: revenueAnalyticsSnippet(framework),
+        "Walk the codebase systematically using the inventory from `inventory_events_by_lens`. " +
+        "For each entry, add an `agentry.send('analytics', {...})` call with rich properties. " +
+        "  • REVENUE events: hook into your payment processor's webhook handler (Stripe webhook " +
+        "    endpoint, Paddle hook, etc.) AND any direct subscription mutation in your code. " +
+        "  • ACTIVATION / RETENTION events: at the controller/route layer where the action " +
+        "    completes successfully — AFTER the DB commit, BEFORE the response is sent. " +
+        "  • REFERRAL events: in your invite/share flows; capture both the sender side " +
+        "    (invite_sent) and the receiver side (invite_accepted). " +
+        "Always pass `distinct_id` (the authenticated user id) so funnels and cohorts work. " +
+        "First-touch attribution (utm_source/medium/campaign, referrer, landing_path) MUST be " +
+        "captured on signup_completed — read from session/cookie set at landing time.",
+      code: aarrrCatalogSnippet(framework),
       validate:
-        "Trigger each event class at least once from dev (signup, a test charge in Stripe test " +
-        "mode, the primary user action). Each should appear via agentry_analytics_query within " +
-        "60s. If revenue events exist in the inventory but the user hasn't completed billing " +
-        "wiring yet, instrument the code paths anyway so the events fire as soon as the " +
-        "processor is live.",
+        "After wiring, you should have 15+ distinct event names firing across ACQUISITION, " +
+        "ACTIVATION, RETENTION, REFERRAL, and (if monetized) REVENUE. Run a real session locally: " +
+        "signup → onboard → use the headline feature → invite a teammate → simulate a Stripe " +
+        "test charge. Each meaningful step should produce at least one event. Then ask: 'where " +
+        "are users dropping off?' — the answer should be specific (a named step), not 'we don't " +
+        "have data for that yet'. If revenue events exist in the inventory but billing isn't " +
+        "live yet, instrument the code paths anyway so events fire as soon as the processor goes live.",
     });
   }
 
@@ -1949,6 +2165,7 @@ function buildHttpGuide(framework: Framework, signalTypes: Set<string>): Install
   }
 
   steps.push(...verifySteps());
+  steps.push(checkinWithUserStep());
   steps.push(suggestNextBuildsStep());
 
   return {
@@ -1973,12 +2190,18 @@ function buildHttpGuide(framework: Framework, signalTypes: Set<string>): Install
     ],
     signal_health_principles: SIGNAL_HEALTH_PRINCIPLES,
     next_action:
-      "Walk every step in order — do NOT stop after wire_errors. wire_analytics_events and " +
-      "wire_deploy_capture are part of the install, not optional follow-ups. Do not ask the user " +
-      "permission to wire analytics or deploys; the user said 'install agentry' which means all three " +
-      "signal types. If a payment processor was detected in `investigate_app_structure`, revenue " +
-      "events from `inventory_revenue_and_key_events` are mandatory. After ALL steps land, call " +
-      "agentry_verify_install with NO `skip` — all three signal types must verify before the install " +
-      "counts as done.",
+      "Walk every step in order from `investigate_app_structure` through `suggest_next_builds`. " +
+      "Do NOT stop after wire_errors. Do NOT ask the user permission to wire analytics or deploys — " +
+      "the user said 'install agentry' which means ALL FIVE AARRR layers (Acquisition, Activation, " +
+      "Retention, Referral, Revenue), errors, AND deploy tagging, in a single continuous pass. " +
+      "The `investigate_app_structure` step picks the metrics lens (default AARRR); " +
+      "`inventory_events_by_lens` produces 15–25+ events grouped by that lens; " +
+      "`wire_analytics_events` instruments every one of them. " +
+      "If a payment processor was detected, REVENUE events are mandatory — no exceptions. " +
+      "After ALL wire_* steps land, call agentry_verify_install with NO `skip` — all three " +
+      "signal types must verify ✅ before the install counts as done. " +
+      "Then run `checkin_with_user` exactly ONCE to confirm coverage, then move into " +
+      "`suggest_next_builds` (dashboards/automations) without asking permission. That step proposes " +
+      "3–5 builds tailored to THIS user's instrumented event inventory — not a generic list.",
   };
 }
