@@ -21,9 +21,16 @@ export type Framework =
   | "elixir"
   | "curl";
 
+// Legacy bucket names kept for back-compat with anything that imports them.
+// EVERY framework now goes through the unified HTTP-helper path — there's no
+// "Node SDK" route any more. agentry is three POST endpoints; the helper is
+// 20–30 lines in any language. JS callers use a fetch-based helper, same shape.
 export const SERVER_FRAMEWORKS: Framework[] = ["node", "next", "express"];
 export const CLIENT_FRAMEWORKS: Framework[] = ["browser", "react", "next-client"];
 export const HTTP_FRAMEWORKS: Framework[] = [
+  // JS — fetch-based helper, no @agentry/node install needed.
+  "node", "next", "express", "browser", "react", "next-client",
+  // Helper-based languages — copy/paste a small module.
   "python", "ruby", "go", "php", "java", "dotnet", "rust", "elixir", "curl",
 ];
 
@@ -1086,7 +1093,241 @@ interface LangRecipe {
   error_handler: { code: string; file_hint: string };
 }
 
-const LANG_RECIPES: Record<Exclude<Framework, "node" | "next" | "express" | "browser" | "react" | "next-client">, LangRecipe> = {
+// Server-side JS helper (Node 20+, native fetch). Used by node/next/express.
+// No @agentry/node import — agentry has NO SDK by design; this is a 25-line
+// drop-in. Same call shape as the Python/Ruby/Go/etc. helpers.
+const JS_SERVER_HELPER = `// src/lib/agentry.ts — server-side helper, native fetch (Node 20+), no deps.
+const URL = process.env.AGENTRY_URL!;
+const DSN = process.env.AGENTRY_DSN!;
+const PID = DSN.split("_")[1].split(".")[0];
+const GIT_SHA = process.env.GIT_SHA
+  ?? process.env.VERCEL_GIT_COMMIT_SHA
+  ?? process.env.RENDER_GIT_COMMIT
+  ?? process.env.HEROKU_SLUG_COMMIT
+  ?? process.env.RAILWAY_GIT_COMMIT_SHA
+  ?? "unknown";
+const ENV = process.env.NODE_ENV ?? "production";
+
+type Kind = "logs" | "analytics" | "deploys";
+
+export async function agentry(kind: Kind, payload: object): Promise<void> {
+  try {
+    await fetch(\`\${URL}/v1/\${kind}/\${PID}/\`, {
+      method: "POST",
+      headers: {
+        authorization: \`Bearer \${DSN}\`,
+        "content-type": "application/json",
+        // user-agent MUST be set — Cloudflare's BIC 403s common defaults.
+        "user-agent": "agentry-node/1.0",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch { /* never let monitoring crash the request */ }
+}
+
+export function captureError(err: unknown, extra?: object): Promise<void> {
+  const e = err instanceof Error ? err : new Error(String(err));
+  return agentry("logs", {
+    name: e.name, message: e.message, stack: e.stack,
+    environment: ENV, deploy_sha: GIT_SHA,
+    extra,
+  });
+}
+
+export function track(event: string, distinct_id: string,
+                     properties: Record<string, unknown> = {}): Promise<void> {
+  return agentry("analytics", { event, distinct_id, properties });
+}`;
+
+// Client-side JS helper (browser/React/Next client). Uses sendBeacon on
+// analytics for reliability across pagehide; native fetch with keepalive otherwise.
+const JS_CLIENT_HELPER = `// src/lib/agentry.ts — client-side helper, native fetch, no dependencies.
+const URL = (import.meta as any).env?.VITE_AGENTRY_URL
+         ?? process.env.NEXT_PUBLIC_AGENTRY_URL
+         ?? process.env.REACT_APP_AGENTRY_URL!;
+const DSN = (import.meta as any).env?.VITE_AGENTRY_DSN
+         ?? process.env.NEXT_PUBLIC_AGENTRY_DSN
+         ?? process.env.REACT_APP_AGENTRY_DSN!;
+const PID = DSN.split("_")[1].split(".")[0];
+
+type Kind = "logs" | "analytics" | "deploys";
+
+export function agentry(kind: Kind, payload: object): void {
+  const body = JSON.stringify(payload);
+  // sendBeacon survives pagehide / navigation. Best for analytics.
+  if (kind === "analytics" && typeof navigator !== "undefined" && navigator.sendBeacon) {
+    navigator.sendBeacon(\`\${URL}/v1/\${kind}/\${PID}/\`,
+      new Blob([body], { type: "application/json" }));
+    return;
+  }
+  fetch(\`\${URL}/v1/\${kind}/\${PID}/\`, {
+    method: "POST",
+    headers: {
+      authorization: \`Bearer \${DSN}\`,
+      "content-type": "application/json",
+      "user-agent": "agentry-browser/1.0",
+    },
+    body,
+    keepalive: true,
+  }).catch(() => {}); // never let monitoring crash the page
+}
+
+export function captureError(err: unknown, extra?: object): void {
+  const e = err instanceof Error ? err : new Error(String(err));
+  agentry("logs", {
+    name: e.name, message: e.message, stack: e.stack,
+    user: { id: getDistinctId() },
+    tags: { url: location.href, ua: navigator.userAgent },
+    extra,
+  });
+}
+
+export function track(event: string, distinct_id: string,
+                     properties: Record<string, unknown> = {}): void {
+  agentry("analytics", { event, distinct_id, properties });
+}
+
+export function getDistinctId(): string {
+  let id = localStorage.getItem("agentry_did");
+  if (!id) { id = crypto.randomUUID(); localStorage.setItem("agentry_did", id); }
+  return id;
+}`;
+
+const LANG_RECIPES: Record<Framework, LangRecipe> = {
+  node: {
+    language_human: "Node.js / TypeScript (server)",
+    helper_file_hint: "Create src/lib/agentry.ts (or wherever your shared utils live).",
+    helper_code: JS_SERVER_HELPER,
+    error_handler: {
+      file_hint:
+        "Top of your main entrypoint (server.ts / index.ts / app.ts) — FIRST lines, AFTER importing the helper. " +
+        "Process-level listeners catch errors that escape any framework boundary.",
+      code: `import { captureError, track, agentry } from "./lib/agentry";
+
+process.on("uncaughtException", (err) => captureError(err, { uncaught: true }));
+process.on("unhandledRejection", (err) => captureError(err, { unhandled: true }));
+
+// Example tracks (use the AARRR catalog from wire_analytics_events):
+await track("signup_completed", user.id, { method: "github", plan: "free" });
+
+// Deploy ping at startup (option A — also see wire_deploy_capture for option B/CI):
+await agentry("deploys", { sha: process.env.GIT_SHA, environment: "production" });`,
+    },
+  },
+  next: {
+    language_human: "Next.js (server runtime)",
+    helper_file_hint: "src/lib/agentry.ts. Next.js will tree-shake out client unused paths.",
+    helper_code: JS_SERVER_HELPER,
+    error_handler: {
+      file_hint:
+        "Create instrumentation.ts at the project root. Next.js calls register() once before any route code. " +
+        "For client-side error capture in app router, also wire app/global-error.tsx — see error_handler.code.",
+      code: `// instrumentation.ts (Next.js calls this once on server start)
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { captureError } = await import("@/lib/agentry");
+    process.on("uncaughtException", (err) => captureError(err, { uncaught: true }));
+    process.on("unhandledRejection", (err) => captureError(err, { unhandled: true }));
+  }
+}
+
+// app/global-error.tsx — catches client-side errors above the app router boundary
+'use client';
+import { captureError } from "@/lib/agentry";
+export default function GlobalError({ error, reset }: { error: Error; reset: () => void }) {
+  captureError(error, { boundary: "global-error" });
+  return <html><body><h2>Something went wrong</h2><button onClick={() => reset()}>Try again</button></body></html>;
+}`,
+    },
+  },
+  express: {
+    language_human: "Express",
+    helper_file_hint: "src/lib/agentry.ts.",
+    helper_code: JS_SERVER_HELPER,
+    error_handler: {
+      file_hint:
+        "Top of your main server file (index.ts / server.ts / app.ts) — BEFORE app.listen() and " +
+        "BEFORE any route imports. Then add an Express error middleware AFTER all routes.",
+      code: `import express from "express";
+import { captureError } from "./lib/agentry";
+
+process.on("uncaughtException", (err) => captureError(err, { uncaught: true }));
+process.on("unhandledRejection", (err) => captureError(err, { unhandled: true }));
+
+const app = express();
+// ... your routes ...
+
+// Express error middleware — MUST have 4 args, MUST be registered AFTER all routes.
+app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  captureError(err, { path: req.path, method: req.method });
+  res.status(500).json({ error: "internal" });
+});`,
+    },
+  },
+  browser: {
+    language_human: "Browser (vanilla JS / TypeScript)",
+    helper_file_hint: "src/lib/agentry.ts (built and bundled into your client output).",
+    helper_code: JS_CLIENT_HELPER,
+    error_handler: {
+      file_hint: "Top of your client entrypoint, AFTER importing the helper.",
+      code: `import { captureError } from "@/lib/agentry";
+
+window.addEventListener("error", (e) => captureError(e.error ?? e.message, { source: "window.error" }));
+window.addEventListener("unhandledrejection", (e) => captureError(e.reason, { source: "unhandledrejection" }));`,
+    },
+  },
+  react: {
+    language_human: "React (Vite / CRA / SPA)",
+    helper_file_hint: "src/lib/agentry.ts.",
+    helper_code: JS_CLIENT_HELPER,
+    error_handler: {
+      file_hint:
+        "Top of src/main.tsx, AFTER importing the helper. Then add a React ErrorBoundary " +
+        "around your root <App /> for component render errors.",
+      code: `import { captureError } from "@/lib/agentry";
+
+window.addEventListener("error", (e) => captureError(e.error ?? e.message, { source: "window.error" }));
+window.addEventListener("unhandledrejection", (e) => captureError(e.reason, { source: "unhandledrejection" }));
+
+// React ErrorBoundary — catches component render errors that the window
+// listeners miss. Wrap your root <App />.
+import { Component, ReactNode } from "react";
+export class AgentryErrorBoundary extends Component<{ children: ReactNode }, { err: Error | null }> {
+  state = { err: null as Error | null };
+  static getDerivedStateFromError(err: Error) { return { err }; }
+  componentDidCatch(err: Error, info: { componentStack: string }) {
+    captureError(err, { boundary: "react", componentStack: info.componentStack });
+  }
+  render() { return this.state.err ? <h2>Something broke. Reloading.</h2> : this.props.children; }
+}`,
+    },
+  },
+  "next-client": {
+    language_human: "Next.js (client / app router)",
+    helper_file_hint: "src/lib/agentry.ts (works in both server and client; this entry is for client wiring).",
+    helper_code: JS_CLIENT_HELPER,
+    error_handler: {
+      file_hint:
+        "Create app/global-error.tsx — Next.js renders this when an unhandled client error escapes layouts. " +
+        "Also add an app/agentry.client.ts 'use client' module imported once from app/layout.tsx for the " +
+        "window error listeners.",
+      code: `// app/global-error.tsx
+'use client';
+import { captureError } from "@/lib/agentry";
+export default function GlobalError({ error, reset }: { error: Error; reset: () => void }) {
+  captureError(error, { boundary: "next-global-error" });
+  return <html><body><h2>Something went wrong</h2><button onClick={() => reset()}>Try again</button></body></html>;
+}
+
+// app/agentry.client.ts — import once from app/layout.tsx
+'use client';
+import { captureError } from "@/lib/agentry";
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (e) => captureError(e.error ?? e.message, { source: "window.error" }));
+  window.addEventListener("unhandledrejection", (e) => captureError(e.reason, { source: "unhandledrejection" }));
+}`,
+    },
+  },
   python: {
     language_human: "Python",
     install_lib: { command: "pip install requests", reason: "Stdlib urllib works too; requests is just easier." },
@@ -1592,6 +1833,207 @@ agentry_send deploys '{"sha": "'"$GITHUB_SHA"'", "branch": "'"$GITHUB_REF_NAME"'
   },
 };
 
+// Category-specific event templates surfaced in inventory_events_by_lens.
+// The agent picks the category matching THIS app and uses its template as the
+// inventory baseline. AARRR is the SaaS default; other categories have their
+// own canonical funnels and shouldn't be force-fit into AARRR. Every template
+// names events in a generic vocabulary — the agent must rename to match THIS
+// product's actual nouns/verbs.
+function categoryEventTemplates(): string {
+  return (
+    "Pick the CATEGORY that matches THIS app (you already chose one in " +
+    "investigate_app_structure). Use its template below as the inventory baseline — " +
+    "rename events to THIS product's actual vocabulary (don't ship a generic " +
+    "'feature_used' when the product calls it 'song_generated'). Every category " +
+    "MUST cover its full funnel; partial coverage is a half-install. " +
+    "" +
+    "════════════════════════════════════════════════════════════════════ " +
+    "CATEGORY: B2C / B2B SaaS (default — AARRR) " +
+    "════════════════════════════════════════════════════════════════════ " +
+    "  ACQUISITION: signup_completed (with first-touch utm_source/medium/campaign, " +
+    "    referrer, landing_path), cta_clicked, paywall_viewed, pricing_page_viewed. " +
+    "  ACTIVATION: onboarding_step_started/completed/skipped, onboarding_completed, " +
+    "    activated (THIS product's first-value moment — first_export / " +
+    "    first_message_sent / first_project_published / first_song_generated etc.). " +
+    "  RETENTION: session_started, daily_active, <entity>_created/updated/" +
+    "    published/archived/deleted (for every meaningful noun), feature_used, " +
+    "    integration_connected/error. " +
+    "  REFERRAL: invite_sent/accepted/expired, share_link_created/visited, " +
+    "    public_link_signup. " +
+    "  REVENUE (mandatory if a processor is detected): trial_started/ended, " +
+    "    plan_selected, checkout_started, payment_method_added, payment_succeeded/" +
+    "    failed, subscription_created/upgraded/downgraded/renewed/canceled/" +
+    "    reactivated, refund_issued, dunning_email_sent. " +
+    "" +
+    "════════════════════════════════════════════════════════════════════ " +
+    "CATEGORY: E-COMMERCE (AARRR + dedicated CART/CHECKOUT funnel) " +
+    "════════════════════════════════════════════════════════════════════ " +
+    "INVESTIGATE FIRST: grep for `cart`, `checkout`, `order`, `inventory`, `shipping`, " +
+    "`fulfillment`, `refund`, `return`, `review`, `coupon`, `discount`, `wishlist`. " +
+    "Read the product catalog model + order schema. Map shipping/fulfillment provider " +
+    "if any (ShipStation, EasyPost, ShipBob). " +
+    "  ACQUISITION: store_visited, ad_clicked, email_opened, search_performed, " +
+    "    filter_applied, category_browsed. " +
+    "  CONSIDERATION: product_viewed (with sku, price, category, brand, in_stock), " +
+    "    product_added_to_wishlist, size_guide_opened, review_read, image_zoomed. " +
+    "  CART: cart_viewed, cart_item_added (with sku, quantity, price), " +
+    "    cart_item_removed, cart_item_quantity_changed, cart_abandoned, " +
+    "    coupon_applied, coupon_invalid. " +
+    "  CHECKOUT: checkout_started, checkout_address_entered, " +
+    "    checkout_shipping_selected, checkout_payment_entered, checkout_completed. " +
+    "  REVENUE: order_placed (with order_id, amount_cents, currency, items[], " +
+    "    coupon_code, discount_cents, shipping_cents, tax_cents, payment_method), " +
+    "    payment_succeeded, payment_failed, order_shipped (with carrier, tracking), " +
+    "    order_delivered, order_canceled. " +
+    "  POST_PURCHASE: refund_requested/issued, return_initiated, return_received, " +
+    "    review_submitted, support_ticket_opened, reorder. " +
+    "  RETENTION: account_created, email_subscribed, sms_subscribed, " +
+    "    loyalty_points_earned/redeemed, wishlist_purchased. " +
+    "  REFERRAL: share_product, gift_card_purchased/redeemed, referral_link_used. " +
+    "" +
+    "════════════════════════════════════════════════════════════════════ " +
+    "CATEGORY: MARKETPLACE (two-sided — instrument per side) " +
+    "════════════════════════════════════════════════════════════════════ " +
+    "INVESTIGATE FIRST: identify the two sides (supply vs. demand) — sellers/buyers, " +
+    "creators/viewers, hosts/guests, etc. Grep for `seller`, `buyer`, `listing`, " +
+    "`offer`, `payout`, `dispute`, `escrow`. Every event below MUST include a " +
+    "`side: 'supply' | 'demand'` property so funnels split correctly. " +
+    "  SUPPLY ACQUISITION: seller_signup, seller_kyc_started/completed, " +
+    "    first_listing_created. " +
+    "  SUPPLY ACTIVATION: listing_published, first_sale_received, " +
+    "    first_payout_received. " +
+    "  SUPPLY ENGAGEMENT: listing_created/updated/deleted, listing_viewed_by_buyer, " +
+    "    listing_inquiry_received, listing_promoted. " +
+    "  DEMAND ACQUISITION: buyer_signup, search_performed, category_browsed. " +
+    "  DEMAND ACTIVATION: first_purchase, first_review_left. " +
+    "  DEMAND ENGAGEMENT: listing_viewed, listing_favorited, message_sent_to_seller, " +
+    "    offer_made, offer_accepted/declined. " +
+    "  REVENUE (both sides): transaction_completed (with side, amount_cents, " +
+    "    platform_fee_cents), payout_initiated/succeeded/failed (supply side), " +
+    "    payment_succeeded/failed (demand side), dispute_filed/resolved (both sides), " +
+    "    refund_issued. " +
+    "" +
+    "════════════════════════════════════════════════════════════════════ " +
+    "CATEGORY: CONTENT / MEDIA (DAU+Stickiness or HEART; consumption-driven) " +
+    "════════════════════════════════════════════════════════════════════ " +
+    "INVESTIGATE FIRST: identify content types (video, audio, article, post, podcast). " +
+    "Find the player/reader component. Look for recommendation engine, ads provider, " +
+    "subscription model, paywalls. " +
+    "  ACQUISITION: visit, search_performed, content_recommended, share_link_visited. " +
+    "  CONSUMPTION: content_started (with content_id, content_type, source: " +
+    "    'recommendation'|'search'|'direct', autoplay), content_progress (every 25% " +
+    "    of completion), content_completed (with completion_pct, duration_ms), " +
+    "    playback_paused/resumed, playback_speed_changed. " +
+    "  ENGAGEMENT: comment_posted, like_added/removed, share_clicked, follow_added/" +
+    "    removed, playlist_created, content_saved, content_downloaded. " +
+    "  MONETIZATION: ad_impression (with ad_id, placement), ad_clicked, ad_skipped, " +
+    "    subscription_started/canceled, tip_sent, premium_content_unlocked. " +
+    "  RETENTION: session_started, daily_active, weekly_active, " +
+    "    content_completion_streak. " +
+    "" +
+    "════════════════════════════════════════════════════════════════════ " +
+    "CATEGORY: DEV TOOL / API (API-call lens) " +
+    "════════════════════════════════════════════════════════════════════ " +
+    "INVESTIGATE FIRST: locate the API gateway / router. Find the auth model (API keys " +
+    "vs OAuth tokens). Identify rate-limit middleware, quota tracking, " +
+    "billing tiers, SDK packages (npm/pip/etc.) you publish. " +
+    "  ACQUISITION: docs_page_viewed (with page, section), signup_completed, " +
+    "    sandbox_used, sample_run, getting_started_completed. " +
+    "  ACTIVATION: first_api_call (the milestone), api_key_minted, app_created, " +
+    "    webhook_configured. " +
+    "  USAGE: api_call_made (with endpoint, status, latency_ms, token_id, " +
+    "    user_id, request_size_bytes), key_rotated, key_revoked, " +
+    "    quota_exceeded, rate_limit_hit, webhook_delivered, webhook_failed, " +
+    "    webhook_retried. " +
+    "  REVENUE: tier_upgraded, plan_selected, usage_billing_calculated, " +
+    "    invoice_generated, payment_succeeded/failed. " +
+    "  RETENTION: daily_active_keys, weekly_active_endpoints, " +
+    "    sdk_version_used (with version, language). " +
+    "" +
+    "════════════════════════════════════════════════════════════════════ " +
+    "CATEGORY: GAMES (DAU+Stickiness + monetization) " +
+    "════════════════════════════════════════════════════════════════════ " +
+    "INVESTIGATE FIRST: find the level/world structure, IAP/store config, ads SDK, " +
+    "achievement system, leaderboard service. " +
+    "  ACQUISITION: install (with source, campaign), first_open. " +
+    "  ACTIVATION: tutorial_started/completed, level_1_completed, first_win. " +
+    "  ENGAGEMENT: session_started/ended (with duration_s), level_started/completed/" +
+    "    failed (with level, attempts, duration_s), achievement_unlocked, " +
+    "    leaderboard_viewed. " +
+    "  RETENTION: daily_login, login_streak (with streak_days), comeback (with " +
+    "    days_away), churn_warning_at_day_N. " +
+    "  MONETIZATION: iap_offered (with offer_id, price_usd), iap_purchased (with " +
+    "    item_id, price_usd, currency), iap_failed, ad_watched (with reward, " +
+    "    ad_network), virtual_currency_earned/spent (with source, amount). " +
+    "" +
+    "════════════════════════════════════════════════════════════════════ " +
+    "CATEGORY: INTERNAL TOOL (HEART — task success focus) " +
+    "════════════════════════════════════════════════════════════════════ " +
+    "INVESTIGATE FIRST: enumerate the primary workflows (tasks the tool exists to " +
+    "make faster). Identify role/permission boundaries. Find any feedback collection " +
+    "(NPS modals, in-app surveys). " +
+    "  ADOPTION: login (with role, team), feature_used (with feature, role), " +
+    "    feature_first_use, training_completed. " +
+    "  TASK SUCCESS: task_started (with task_type), task_completed (with " +
+    "    duration_ms, errors_along_the_way), task_abandoned (with at_step), " +
+    "    workflow_completed. " +
+    "  HAPPINESS: nps_submitted (with score, comment_present), csat_submitted, " +
+    "    feature_request_submitted. " +
+    "  HEALTH: error_encountered (with error_type, recoverable, retried), " +
+    "    support_ticket_created, slow_response (with route, duration_ms). " +
+    "" +
+    "════════════════════════════════════════════════════════════════════ " +
+    "CATEGORY: SINGLE-PURCHASE COMMERCE (courses / one-shot products / digital goods) " +
+    "════════════════════════════════════════════════════════════════════ " +
+    "INVESTIGATE FIRST: find the paywall and the post-purchase consumption flow (LMS, " +
+    "downloads, license activation). Look for upsell/cross-sell mechanisms. " +
+    "  ACQUISITION: landing_visited, lead_magnet_downloaded, email_subscribed, " +
+    "    sales_page_viewed. " +
+    "  CONSIDERATION: pricing_section_viewed, faq_opened, testimonial_played, " +
+    "    money_back_guarantee_viewed. " +
+    "  REVENUE: checkout_started, payment_method_added, purchase_completed (with " +
+    "    amount_cents, product_id, coupon), purchase_failed, refund_requested/issued. " +
+    "  POST_PURCHASE: license_activated, first_lesson_started (for courses), " +
+    "    course_completed, certificate_issued, download_initiated. " +
+    "  UPSELL: bump_offer_viewed/accepted, upsell_offer_viewed/accepted, " +
+    "    cross_sell_clicked, reorder. " +
+    "" +
+    "════════════════════════════════════════════════════════════════════ " +
+    "CATEGORY: OPEN-SOURCE / COMMUNITY (custom — community-health metrics) " +
+    "════════════════════════════════════════════════════════════════════ " +
+    "INVESTIGATE FIRST: identify the community surfaces — GitHub, Discord, Slack, " +
+    "forum, docs site. Find GitHub Actions workflows that emit telemetry. Look for " +
+    "sponsorship/donation integration (GitHub Sponsors, Open Collective, etc.). " +
+    "  GROWTH: star_added, fork_made, watch_added, repo_visited. " +
+    "  CONTRIBUTION: issue_opened/closed, pr_opened/merged/closed, " +
+    "    comment_posted, review_requested/submitted, contributor_first_pr. " +
+    "  COMMUNITY: discord_joined, forum_post_created, question_answered, " +
+    "    docs_page_viewed, getting_started_completed. " +
+    "  SPONSORSHIP: sponsor_added/removed (with tier, amount_usd), " +
+    "    donation_received. " +
+    "  USAGE: install/import_detected (if you have telemetry in the library), " +
+    "    cli_command_run, version_used. " +
+    "" +
+    "════════════════════════════════════════════════════════════════════ " +
+    "CATEGORY: ENTERPRISE SALES (B2B sales-led — lead-to-close funnel) " +
+    "════════════════════════════════════════════════════════════════════ " +
+    "INVESTIGATE FIRST: identify CRM integration (HubSpot, Salesforce, Pipedrive), " +
+    "lead-capture forms, demo-booking flow, marketing-automation tool (Marketo, " +
+    "Customer.io), proposal/contract tool (PandaDoc, DocuSign). " +
+    "  TOP-OF-FUNNEL: lead_captured (with source, form_id), demo_requested, " +
+    "    demo_scheduled, demo_completed/no_show, content_downloaded, " +
+    "    webinar_registered/attended. " +
+    "  MQL → SQL: lead_qualified, lead_assigned (with rep), discovery_call_completed, " +
+    "    opportunity_created (with stage, value_cents). " +
+    "  PIPELINE: stage_advanced (with from_stage, to_stage), proposal_sent, " +
+    "    negotiation_started, opportunity_won/lost (with reason). " +
+    "  POST-SALE: contract_signed (with contract_value_cents, term_months, " +
+    "    payment_terms), onboarding_kickoff, csm_assigned, account_health_check " +
+    "    (with score). " +
+    "  EXPANSION: upsell_opportunity_created, contract_renewed, contract_expanded. "
+  );
+}
+
 // Language-keyed snippets for the analytics + deploy wiring steps. Comprehensive
 // AARRR catalog so the agent has a full instrumentation reference; the agent's
 // job is to lift the patterns into the real codebase using THIS product's
@@ -1903,17 +2345,43 @@ function buildHttpGuide(framework: Framework, signalTypes: Set<string>): Install
       "not boilerplate.",
     action: "manual",
     file_hint:
-      "Read the dependency manifest (requirements.txt / Gemfile / go.mod / composer.json / etc.) " +
-      "to confirm the framework. " +
-      "Walk the source — note the route structure, the auth flow, the key user actions, " +
-      "the integrations (Stripe/Paddle/payment provider, Slack, CRM, third-party APIs), " +
-      "background jobs/cron, the webhook endpoints (both incoming and outgoing). " +
-      "Look at the DB schema or ORM models — what entities exist (users, subscriptions, " +
-      "workspaces, projects, posts, etc.)? Each one's create/update/delete is probably worth " +
-      "tracking. " +
-      "Note where errors are caught and silently ignored — those are missing breadcrumbs. " +
-      "Read README.md / docs/ for the product framing. Look at landing/pricing pages if they " +
-      "exist for plan structure and value props.",
+      "ALL APPS — read first: dependency manifest (package.json / requirements.txt / Gemfile / " +
+      "go.mod / composer.json / Cargo.toml / etc.) to confirm framework. README.md / docs/ for " +
+      "product framing. Landing/pricing page if present. " +
+      "Walk the source — note the route structure, auth flow, key user actions, integrations " +
+      "(payment provider, CRM, Slack, third-party APIs), background jobs/cron, webhook endpoints " +
+      "(incoming AND outgoing). Look at DB schema or ORM models — entity lifecycles are usually " +
+      "events worth tracking. Note where errors are caught and silently ignored (missing breadcrumbs). " +
+      "" +
+      "THEN — category-specific investigation hints. After you've sketched a category guess, " +
+      "follow up with the matching pass: " +
+      "  • SaaS (B2C/B2B self-serve) — Look at: onboarding flow, plan tiers and pricing page, " +
+      "    Stripe/Paddle subscription model, feature gating, invite/share flows, team/workspace " +
+      "    primitives. The 'activation' moment is whatever the value-loop pulls a user through. " +
+      "  • E-commerce — Look at: product catalog model, cart and checkout flow, " +
+      "    inventory/stock management, shipping/fulfillment provider (ShipStation, ShipBob, " +
+      "    EasyPost), refund/return flow, review system, coupon/discount engine, loyalty program. " +
+      "  • Marketplace (two-sided) — Identify BOTH sides explicitly. Look at: seller onboarding " +
+      "    (KYC, listing creation), buyer flow (search, message, offer), escrow/payout flow, " +
+      "    dispute resolution, platform-fee accounting, ratings/reviews per side. " +
+      "  • Content / Media — Look at: content types (video/audio/article/podcast), player or " +
+      "    reader component, recommendation engine, ad-server integration, paywalls, subscription " +
+      "    model, social features (comments, likes, follows, playlists). " +
+      "  • Dev tool / API — Look at: API gateway/router, auth model (API keys vs OAuth tokens), " +
+      "    rate-limit middleware, quota tracking, billing tiers (especially usage-based), " +
+      "    webhook delivery, SDK packages published, docs site framework. " +
+      "  • Games — Look at: level/world structure, IAP/store config, ads SDK, achievement and " +
+      "    leaderboard systems, virtual currency, retention loops (daily quests, streaks). " +
+      "  • Internal tool — Look at: primary workflows (the tasks the tool makes faster), role/" +
+      "    permission boundaries, NPS or CSAT modals, support-ticket integration. " +
+      "  • Single-purchase commerce — Look at: paywall, post-purchase consumption flow (LMS, " +
+      "    license activation, downloads), order-bump and upsell mechanisms, refund window. " +
+      "  • Open-source / community — Look at: GitHub Actions emitting telemetry, sponsorship " +
+      "    integration (GitHub Sponsors, Open Collective), Discord/Slack/forum surface, " +
+      "    docs site, library telemetry if you publish SDKs/packages. " +
+      "  • Enterprise sales — Look at: CRM integration (HubSpot/Salesforce/Pipedrive), " +
+      "    lead-capture forms, demo-booking tool (Calendly/Chili Piper), marketing-automation " +
+      "    (Marketo/Customer.io), contract tool (PandaDoc/DocuSign).",
     validate:
       "You must be able to answer ALL of these before writing any agentry calls; write the " +
       "answers to agentry_memory.md so subsequent steps are grounded in THIS app, not a " +
@@ -2053,48 +2521,49 @@ function buildHttpGuide(framework: Framework, signalTypes: Set<string>): Install
   if (signalTypes.has("analytics")) {
     steps.push({
       id: "inventory_events_by_lens",
-      title: "REQUIRED: build the event inventory grouped by your chosen metrics lens",
+      title: "REQUIRED: build the event inventory using THIS product's category template",
       why:
         "Analytics events are NOT optional — they're a contracted part of the install. The user " +
-        "expects comprehensive instrumentation across every layer of the lens chosen in " +
-        "`investigate_app_structure` (default: AARRR). Skipping this gives them 'errors only' " +
-        "which is half the product. Before writing any `agentry.send('analytics', ...)` call, " +
-        "build a concrete event inventory grounded in THIS codebase — at least 15–25 distinct " +
-        "events across the lens layers, named in THIS product's vocabulary.",
+        "expects comprehensive instrumentation specific to THIS product's category (SaaS, " +
+        "e-commerce, marketplace, content, dev-tool, games, internal-tool, single-purchase, " +
+        "open-source, or enterprise-sales). Skipping this gives them 'errors only' which is half " +
+        "the product. Before writing any `agentry.send('analytics', ...)` call, build a concrete " +
+        "event inventory grounded in THIS codebase using the category template below — at least " +
+        "15–25 distinct events, named in THIS product's vocabulary. " +
+        "Different categories have different funnels: e-commerce has a cart→checkout flow that " +
+        "AARRR doesn't capture; marketplaces have two-sided events; content/media is consumption-" +
+        "driven; games are session+monetization-driven. Pick the right template, don't force-fit.",
       action: "manual",
       file_hint:
-        "RE-READ agentry_memory.md (or your scratch notes from investigate_app_structure) so the " +
-        "inventory is grounded in THIS app — not a generic template. " +
-        "Then walk each LAYER of your chosen lens and list the events you'll instrument: " +
-        "  AARRR DEFAULT: " +
-        "  • ACQUISITION — signup_completed (with utm_source/medium/campaign/referrer captured " +
-        "    at first touch), cta_clicked, paywall_viewed. " +
-        "  • ACTIVATION — onboarding_step_started/completed/skipped, onboarding_completed, " +
-        "    activated (the product's first-value moment: first_export / first_message_sent / " +
-        "    first_project_published — pick the one specific to THIS product). " +
-        "  • RETENTION — session_started, daily_active, plus entity lifecycle: " +
-        "    <entity>_created / _updated / _deleted / _published / _archived, feature_used, " +
-        "    integration_connected / _disconnected / _error. " +
-        "  • REFERRAL — invite_sent, invite_accepted, invite_expired, share_link_created, " +
-        "    share_link_visited, public_link_signup. " +
-        "  • REVENUE (mandatory if a payment processor is in the repo — grep for `stripe`, " +
-        "    `paddle`, `lemonsqueezy`, `chargebee`, `braintree`, `paypal`) — " +
-        "    trial_started/ended, plan_selected, checkout_started, payment_method_added, " +
-        "    payment_succeeded, payment_failed, subscription_created, subscription_upgraded, " +
-        "    subscription_downgraded, subscription_renewed, subscription_canceled, " +
-        "    subscription_reactivated, refund_issued, dunning_email_sent. " +
-        "If you chose a DIFFERENT lens (HEART / North Star+Drivers / DAU+Stickiness / B2B funnel / " +
-        "PLG / JTBD / API tool / Marketplace), build the inventory around its stages instead — " +
-        "the layer names change, the rigor doesn't. " +
-        "ALSO INVENTORY: error context (deploy_sha, environment), background-job " +
-        "outcomes (job_started / job_completed / job_failed with job_type + duration), webhook " +
-        "deliveries, and any third-party API timeouts/errors worth tracking.",
+        "RE-READ agentry_memory.md (your notes from investigate_app_structure) for the chosen " +
+        "category. THEN use the matching template below to build the inventory. " +
+        "════════════════════════════════════════════════════════════════════ " +
+        categoryEventTemplates() +
+        "════════════════════════════════════════════════════════════════════ " +
+        "ALSO inventory (cross-category): error context (deploy_sha, environment), " +
+        "background-job outcomes (job_started/completed/failed with job_type + duration_ms), " +
+        "webhook deliveries (incoming + outgoing), third-party API timeouts/errors worth " +
+        "tracking, and any cron/scheduled task outcomes. " +
+        "If a payment processor exists for ANY category, REVENUE events are mandatory — grep " +
+        "for `stripe`, `paddle`, `lemonsqueezy`, `chargebee`, `braintree`, `paypal`, " +
+        "`squareup`, `mollie`, `razorpay`, `adyen`. " +
+        "Write the final inventory to agentry_memory.md under a `## Event Inventory` heading, " +
+        "grouped by the category template's layer names — so subsequent steps and " +
+        "suggest_next_builds can reference it.",
       validate:
-        "Produce a written list of 15–25+ distinct event names grouped under each layer of your " +
-        "chosen lens. If a payment processor was detected and your REVENUE layer has fewer than " +
-        "5 events, you are not done with this step — go back. If your inventory has only " +
-        "page_view + signup_completed, you have not done the work; the agent's value comes from " +
-        "the events you instrument here. Storage is cheap; missing data is unrecoverable.",
+        "Produce a written list of 15–25+ distinct event names grouped under each layer of " +
+        "THIS app's category template (not the SaaS/AARRR template if the app is e-commerce/" +
+        "marketplace/etc.). Coverage rules: " +
+        "  • If a payment processor was detected, REVENUE layer has 5+ events (no exceptions). " +
+        "  • If e-commerce: CART + CHECKOUT layers each have 3+ events. " +
+        "  • If marketplace: events have `side: 'supply'|'demand'` property and both sides are " +
+        "    instrumented. " +
+        "  • If content/media: CONSUMPTION layer has progress events at multiple completion %. " +
+        "  • If dev-tool/API: api_call_made fires on every API call with endpoint+status+latency. " +
+        "  • If games: session_started/ended + at least one monetization event class. " +
+        "If your inventory has only page_view + signup_completed, you have not done the work; " +
+        "the agent's value comes from the events you instrument here. Storage is cheap; missing " +
+        "data is unrecoverable.",
     });
 
     steps.push({
