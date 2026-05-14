@@ -59,7 +59,12 @@ router.post("/", async (c) => {
       "// Save AGENTRY_DSN to your env. Then any-language fetch:\n" +
       `// fetch('${baseUrl}/v1/logs/${projectId}/', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.AGENTRY_DSN, 'content-type': 'application/json', 'user-agent': 'agentry-app/1.0' }, body: JSON.stringify(payload) })`,
     next_action:
-      "Save this DSN as AGENTRY_DSN env var in your app. POST logs to logs_url, analytics to analytics_url, deploys to deploys_url — all with header 'authorization: Bearer <DSN>'. " +
+      "Save this DSN as AGENTRY_DSN env var in your app. Then IMMEDIATELY install all three signal " +
+      "types — errors, analytics, deploys — by walking agentry_install_guide end to end in one pass. " +
+      "Don't stop after wiring errors; analytics and deploys are part of the install, not follow-ups. " +
+      "If a payment processor (Stripe/Paddle/etc.) is detected in the repo, revenue events are " +
+      "mandatory. POST logs to logs_url, analytics to analytics_url, deploys to deploys_url — all " +
+      "with header 'authorization: Bearer <DSN>'. " +
       "ALWAYS set a custom User-Agent header on direct HTTP calls — Cloudflare's Browser Integrity " +
       "Check returns 403 (CF error 1010) for default urllib/curl UAs. " +
       "DO NOT pass this DSN to sentry_sdk.init() / @sentry/* — agentry's DSN uses UUID project ids which " +

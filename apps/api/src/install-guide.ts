@@ -953,7 +953,13 @@ PostHog.`,
 }
 
 export function buildInstallGuide(framework: Framework, signalTypes: string[]): InstallGuide {
-  const wantedSet = new Set(signalTypes.length ? signalTypes : ["logs", "analytics", "deploys"]);
+  // Normalize aliases. The route layer + MCP both use "errors"; the file's
+  // internal checks use "logs". Treating them as synonyms so the API contract
+  // can use either and the helper steps still fire correctly.
+  const normalized = (signalTypes.length ? signalTypes : ["logs", "analytics", "deploys"]).map(
+    (t) => (t === "errors" ? "logs" : t),
+  );
+  const wantedSet = new Set(normalized);
 
   // Direct-HTTP languages get a separate, simpler builder.
   if (isHttpFramework(framework)) {
@@ -1544,6 +1550,185 @@ agentry_send deploys '{"sha": "'"$GITHUB_SHA"'", "branch": "'"$GITHUB_REF_NAME"'
   },
 };
 
+// Language-keyed snippets for the analytics + deploy wiring steps. Kept small;
+// these are illustrative — the agent's job is to lift the patterns into the
+// real codebase, not paste verbatim. Default to Python/requests-shaped code
+// when the framework matches one of the helper-based languages; the agent
+// rewrites for Ruby/Go/PHP/etc. trivially using the same Agentry.send shape.
+function revenueAnalyticsSnippet(framework: Framework): string {
+  // One snippet covers all helper-based languages — the call shape is
+  // identical (`agentry.send("analytics", {...})`). Comments name the
+  // canonical events. Language-specific syntax differs but the events do not.
+  if (framework === "ruby" || framework === "rails") {
+    return `# Stripe webhook handler — POST /webhooks/stripe
+case event.type
+when "checkout.session.completed"
+  Agentry.send("analytics", event: "subscription_started", distinct_id: customer_id,
+    properties: { plan: plan_name, amount_usd: amount / 100.0, currency: currency })
+when "customer.subscription.updated"
+  Agentry.send("analytics", event: "subscription_upgraded", distinct_id: customer_id,
+    properties: { from_plan: old_plan, to_plan: new_plan, mrr_delta: delta })
+when "customer.subscription.deleted"
+  Agentry.send("analytics", event: "subscription_cancelled", distinct_id: customer_id,
+    properties: { plan: plan_name, reason: cancellation_reason })
+when "invoice.payment_succeeded"
+  Agentry.send("analytics", event: "payment_succeeded", distinct_id: customer_id,
+    properties: { amount_usd: amount / 100.0, plan: plan_name })
+when "invoice.payment_failed"
+  Agentry.send("analytics", event: "payment_failed", distinct_id: customer_id,
+    properties: { amount_usd: amount / 100.0, reason: failure_reason })
+end
+
+# Primary user actions — fire AFTER successful DB commit:
+Agentry.send("analytics", event: "signup_completed", distinct_id: user.id,
+  properties: { source: utm_source, plan: "free" })
+Agentry.send("analytics", event: "project_created", distinct_id: user.id,
+  properties: { project_id: project.id, template: template_name })`;
+  }
+  if (framework === "go") {
+    return `// Stripe webhook handler
+switch event.Type {
+case "checkout.session.completed":
+    agentry.Send("analytics", map[string]any{"event": "subscription_started",
+        "distinct_id": customerID, "properties": map[string]any{"plan": planName, "amount_usd": amount / 100.0}})
+case "customer.subscription.deleted":
+    agentry.Send("analytics", map[string]any{"event": "subscription_cancelled",
+        "distinct_id": customerID, "properties": map[string]any{"plan": planName, "reason": reason}})
+case "invoice.payment_succeeded":
+    agentry.Send("analytics", map[string]any{"event": "payment_succeeded",
+        "distinct_id": customerID, "properties": map[string]any{"amount_usd": amount / 100.0}})
+case "invoice.payment_failed":
+    agentry.Send("analytics", map[string]any{"event": "payment_failed",
+        "distinct_id": customerID, "properties": map[string]any{"reason": reason}})
+}
+
+// Primary user actions — fire AFTER successful DB commit:
+agentry.Send("analytics", map[string]any{"event": "signup_completed",
+    "distinct_id": user.ID, "properties": map[string]any{"plan": "free"}})`;
+  }
+  // Python is the most common case — use that shape for everything else
+  // (php/java/dotnet/rust/elixir agents adapt trivially).
+  return `# Stripe webhook handler (FastAPI / Flask / Django — same call shape)
+# Fire BEFORE returning 200 to Stripe so the event is recorded even if the
+# caller retries. Wrap in try/except — analytics failures must not break the webhook.
+if event.type == "checkout.session.completed":
+    agentry.send("analytics", {
+        "event": "subscription_started",
+        "distinct_id": customer_id,
+        "properties": {"plan": plan_name, "amount_usd": amount / 100.0, "currency": currency},
+    })
+elif event.type == "customer.subscription.updated":
+    agentry.send("analytics", {
+        "event": "subscription_upgraded",
+        "distinct_id": customer_id,
+        "properties": {"from_plan": old_plan, "to_plan": new_plan, "mrr_delta_usd": delta},
+    })
+elif event.type == "customer.subscription.deleted":
+    agentry.send("analytics", {
+        "event": "subscription_cancelled",
+        "distinct_id": customer_id,
+        "properties": {"plan": plan_name, "reason": cancellation_reason},
+    })
+elif event.type == "invoice.payment_succeeded":
+    agentry.send("analytics", {
+        "event": "payment_succeeded",
+        "distinct_id": customer_id,
+        "properties": {"amount_usd": amount / 100.0, "plan": plan_name},
+    })
+elif event.type == "invoice.payment_failed":
+    agentry.send("analytics", {
+        "event": "payment_failed",
+        "distinct_id": customer_id,
+        "properties": {"amount_usd": amount / 100.0, "reason": failure_reason},
+    })
+
+# Primary user actions — fire AFTER successful DB commit, BEFORE response:
+agentry.send("analytics", {
+    "event": "signup_completed",
+    "distinct_id": user.id,
+    "properties": {"source": utm_source, "plan": "free"},
+})
+agentry.send("analytics", {
+    "event": "project_created",
+    "distinct_id": user.id,
+    "properties": {"project_id": project.id, "template": template_name},
+})
+
+# Onboarding step events — fire one per step so the funnel is queryable:
+agentry.send("analytics", {
+    "event": "onboarding_step_completed",
+    "distinct_id": user.id,
+    "properties": {"step": "connect_repo", "step_number": 2},
+})`;
+}
+
+function deploySnippet(framework: Framework): string {
+  // Both options shown; agent picks one. Option A is preferred for projects
+  // already running in production (no CI changes needed); option B is preferred
+  // when deploy timing must be precise (CI knows exactly when prod is live).
+  if (framework === "ruby" || framework === "rails") {
+    return `# OPTION A — startup-time deploy ping (config/initializers/agentry.rb)
+sha = ENV["GIT_SHA"] || ENV["HEROKU_SLUG_COMMIT"] || ENV["RENDER_GIT_COMMIT"]
+if sha && ENV["AGENTRY_DSN"]
+  Agentry.send("deploys", sha: sha, environment: Rails.env,
+    branch: ENV["GIT_BRANCH"] || "main")
+end
+
+# OPTION B — CI step (.github/workflows/deploy.yml, AFTER deploy success)
+# - name: Tag agentry deploy
+#   run: |
+#     curl -fsS -A "agentry-ci/1.0" -X POST "$AGENTRY_URL/v1/deploys/$PROJECT_ID/" \\
+#       -H "authorization: Bearer $AGENTRY_DSN" -H "content-type: application/json" \\
+#       -d '{"sha":"'"\${{ github.sha }}"'","branch":"main","environment":"production"}'`;
+  }
+  if (framework === "go") {
+    return `// OPTION A — startup-time deploy ping (main.go, after env load)
+sha := os.Getenv("GIT_SHA")
+if sha == "" { sha = os.Getenv("RENDER_GIT_COMMIT") }
+if sha != "" {
+    agentry.Send("deploys", map[string]any{
+        "sha": sha, "environment": os.Getenv("APP_ENV"),
+        "branch": os.Getenv("GIT_BRANCH"),
+    })
+}
+
+// OPTION B — CI step (.github/workflows/deploy.yml, AFTER deploy success)
+// - name: Tag agentry deploy
+//   run: curl -fsS -A "agentry-ci/1.0" -X POST ...`;
+  }
+  return `# OPTION A — startup-time deploy ping (run ONCE per cold start, after env load)
+# FastAPI: in main.py before app.include_router, or in a @app.on_event("startup") handler.
+# Flask: at module load. Django: in apps.py ready() with a "not in migrate" guard.
+import os
+sha = (
+    os.environ.get("GIT_SHA")
+    or os.environ.get("RENDER_GIT_COMMIT")
+    or os.environ.get("VERCEL_GIT_COMMIT_SHA")
+    or os.environ.get("HEROKU_SLUG_COMMIT")
+    or os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+)
+if sha and os.environ.get("AGENTRY_DSN"):
+    agentry.send("deploys", {
+        "sha": sha,
+        "environment": os.environ.get("APP_ENV", "production"),
+        "branch": os.environ.get("GIT_BRANCH", "main"),
+    })
+
+# OPTION B — CI step (.github/workflows/deploy.yml, AFTER deploy success)
+# - name: Tag agentry deploy
+#   if: success() && github.ref == 'refs/heads/main'
+#   run: |
+#     curl -fsS -A "agentry-ci/1.0" -X POST "$AGENTRY_URL/v1/deploys/$AGENTRY_PROJECT_ID/" \\
+#       -H "authorization: Bearer $AGENTRY_DSN" \\
+#       -H "content-type: application/json" \\
+#       -d '{
+#         "sha": "'"\${{ github.sha }}"'",
+#         "branch": "'"\${{ github.ref_name }}"'",
+#         "environment": "production",
+#         "actor": "'"\${{ github.actor }}"'"
+#       }'`;
+}
+
 function buildHttpGuide(framework: Framework, signalTypes: Set<string>): InstallGuide {
   const recipe = LANG_RECIPES[framework as keyof typeof LANG_RECIPES];
   if (!recipe) {
@@ -1653,20 +1838,109 @@ function buildHttpGuide(framework: Framework, signalTypes: Set<string>): Install
       "you skipped `do_not_use_sentry_sdk` — go back and read it.",
   });
 
-  if (signalTypes.has("logs") || signalTypes.has("analytics") || signalTypes.has("deploys")) {
+  // Three required signal-wiring steps. The agent MUST walk through all three
+  // before declaring the install complete. Do not collapse these — agents
+  // skim past mentions of analytics/deploys when they're folded into the
+  // error step, and the user ends up with a half-installed product.
+  if (signalTypes.has("logs")) {
     steps.push({
-      id: "wire_signal_capture",
-      title: "Wire up error / analytics / deploy capture",
+      id: "wire_errors",
+      title: "REQUIRED: wire framework-level error capture",
       why:
-        "Errors get caught by your framework's error handler and forwarded. Analytics events and " +
-        "deploys are explicit calls. All three go through the same `log()` helper.",
+        "Errors are signal #1. Without this, agentry has no log feed and the agent has nothing " +
+        "to investigate. Hook the framework's global exception handler so EVERY uncaught error " +
+        "is forwarded — not just ones you remember to wrap in try/except.",
       action: "edit",
       file_hint: recipe.error_handler.file_hint,
       code: recipe.error_handler.code,
       validate:
-        "Throw an unhandled exception in dev. The case should appear in agentry_list_cases. " +
-        "Track an event. Verify it arrives in PostHog (agentry_analytics_query). " +
-        "If a CI deploy step calls deploy variant, agentry_list_deploys should show it.",
+        "Throw a synthetic uncaught exception in a dev request. Within 60s, agentry_list_cases " +
+        "should return a case for it. If not, the handler isn't wired — re-check the file_hint " +
+        "and confirm the global handler actually fires.",
+    });
+  }
+
+  if (signalTypes.has("analytics")) {
+    steps.push({
+      id: "inventory_revenue_and_key_events",
+      title: "REQUIRED: inventory revenue + key user actions BEFORE instrumenting analytics",
+      why:
+        "Analytics events are NOT optional — they're a contracted part of the install. The user " +
+        "expects: every revenue-adjacent action, every primary user action, every onboarding " +
+        "step. Skipping this gives them 'errors only' which is half the product. Before writing " +
+        "any `track()` call, build a concrete event inventory grounded in THIS codebase — not a " +
+        "generic template. Money first, then primary actions, then state transitions.",
+      action: "manual",
+      file_hint:
+        "REVENUE: grep the codebase for `stripe`, `paddle`, `lemonsqueezy`, `chargebee`, " +
+        "`braintree`, `paypal`, subscription/billing/checkout routes, webhook handlers for " +
+        "`charge.succeeded` / `customer.subscription.*` / `invoice.payment_*`. If any payment " +
+        "processor exists, you MUST instrument: signup_completed, subscription_started, " +
+        "subscription_upgraded, subscription_downgraded, subscription_cancelled, payment_succeeded, " +
+        "payment_failed, refund_issued. " +
+        "KEY ACTIONS: re-read your output from `investigate_app_structure` — every entity " +
+        "lifecycle (project_created, workspace_invited, etc.) and every meaningful user action " +
+        "from the route inventory. " +
+        "ONBOARDING: each step of signup → first-value should be its own event so the funnel is " +
+        "queryable.",
+      validate:
+        "Produce a written list of 8–25 events you're about to instrument, grouped as " +
+        "REVENUE / KEY_ACTIONS / ONBOARDING. If a payment processor was detected and you have " +
+        "zero revenue events listed, you are not done with this step — go back. If you have only " +
+        "page_view and signup_completed, you have not done the work; the agent's value comes from " +
+        "the events you instrument here.",
+    });
+
+    steps.push({
+      id: "wire_analytics_events",
+      title: "REQUIRED: instrument the analytics events from your inventory",
+      why:
+        "Walk down the inventory from `inventory_revenue_and_key_events` and wire EACH event " +
+        "with a call to the agentry helper. Don't ask the user permission to do this — analytics " +
+        "is part of the install, not a follow-up. Don't stop after one or two events. Storage " +
+        "is cheap; missing data is expensive.",
+      action: "edit",
+      file_hint:
+        "REVENUE events: hook into your payment processor's webhook handler (Stripe webhook " +
+        "endpoint, Paddle hook, etc.) AND any direct subscription mutation in your code. " +
+        "USER ACTIONS: at the controller/route layer where the action completes successfully — " +
+        "AFTER the DB commit, BEFORE the response is sent. Always pass `distinct_id` (the " +
+        "authenticated user id) so funnels and cohorts work. " +
+        "Be liberal with `properties` — plan name, amount, currency, source, anything the agent " +
+        "might want to slice by later.",
+      code: revenueAnalyticsSnippet(framework),
+      validate:
+        "Trigger each event class at least once from dev (signup, a test charge in Stripe test " +
+        "mode, the primary user action). Each should appear via agentry_analytics_query within " +
+        "60s. If revenue events exist in the inventory but the user hasn't completed billing " +
+        "wiring yet, instrument the code paths anyway so the events fire as soon as the " +
+        "processor is live.",
+    });
+  }
+
+  if (signalTypes.has("deploys")) {
+    steps.push({
+      id: "wire_deploy_capture",
+      title: "REQUIRED: tag every deploy so cases attribute to commits",
+      why:
+        "Without deploy events, cases have `last_deploy_sha = null` and the agent cannot answer " +
+        "'did this break with the last deploy?' — which is the #1 question. Two viable paths; " +
+        "pick whichever fits the project, but DO PICK ONE: (a) startup-time POST from the app " +
+        "process itself reading GIT_SHA from env, or (b) explicit CI step after a successful " +
+        "deploy. Do not skip this step waiting on the user — it's part of the install.",
+      action: "edit",
+      file_hint:
+        "OPTION A (startup): in the app's main entrypoint, AFTER agentry env vars are loaded, " +
+        "POST once to /v1/deploys/. Wrap in a feature flag if you want, but it should fire on " +
+        "every cold start. Read SHA from `GIT_SHA` / `RENDER_GIT_COMMIT` / `VERCEL_GIT_COMMIT_SHA` " +
+        "/ `HEROKU_SLUG_COMMIT` / etc. — pick whichever your platform exposes. " +
+        "OPTION B (CI): add a step to the deploy workflow (.github/workflows/*.yml, Vercel " +
+        "deploy hook, etc.) that runs `agentry.send('deploys', ...)` AFTER deploy success.",
+      code: deploySnippet(framework),
+      validate:
+        "Either restart your dev server (option A) or run the CI step manually (option B). " +
+        "Within 60s, agentry_list_deploys should return at least one deploy with the current " +
+        "git SHA. Then fire a synthetic case and confirm its `last_deploy_sha` matches.",
     });
   }
 
@@ -1699,7 +1973,12 @@ function buildHttpGuide(framework: Framework, signalTypes: Set<string>): Install
     ],
     signal_health_principles: SIGNAL_HEALTH_PRINCIPLES,
     next_action:
-      "Read each step in order. After all steps land, call agentry_verify_install — that's the only proof " +
-      "the install actually works. The helper is intentionally tiny so an agent can review every line.",
+      "Walk every step in order — do NOT stop after wire_errors. wire_analytics_events and " +
+      "wire_deploy_capture are part of the install, not optional follow-ups. Do not ask the user " +
+      "permission to wire analytics or deploys; the user said 'install agentry' which means all three " +
+      "signal types. If a payment processor was detected in `investigate_app_structure`, revenue " +
+      "events from `inventory_revenue_and_key_events` are mandatory. After ALL steps land, call " +
+      "agentry_verify_install with NO `skip` — all three signal types must verify before the install " +
+      "counts as done.",
   };
 }
