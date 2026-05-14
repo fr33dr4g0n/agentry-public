@@ -147,11 +147,45 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     name: "agentry_get_case",
     description:
       "Get full detail for a case — stack trace, deploy SHA, suppression hints, and `local_path`. " +
-      "Surface `next_actions` to the agent.",
+      "Surface `next_actions` to the agent. If the returned stack frames look minified (file paths " +
+      "like `chunks/abc.js`, function names like `t.a`), call agentry_unmangle_stack next.",
     inputSchema: {
       type: "object",
       properties: {
         case_id: { type: "string", description: "Case id" },
+      },
+      required: ["case_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_unmangle_stack",
+    description:
+      "Translate a minified stack trace using sourcemaps stored in agentry. " +
+      "agentry stores the .map files; THIS tool does the translation LOCALLY in the MCP process " +
+      "using @jridgewell/trace-mapping. The code that runs is in the @agentrysh/mcp npm package — " +
+      "readable on npm, version-pinned, no server-side magic. " +
+      "Returns translated frames + the .map source_urls fetched + the exact code snippet that " +
+      "produced the translation, so the result is fully auditable. " +
+      "Call this whenever agentry_get_case returns a stack with minified frames (file paths like " +
+      "`chunks/abc.js`, function names like `t.a` / `n.exports`). For server-side stacks (paths " +
+      "in `src/...` or `node_modules/...`) you don't need this — the frames are already readable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        case_id: { type: "string", description: "Case id whose stack(s) to unmangle." },
+        event_id: {
+          type: "string",
+          description:
+            "Optional: a specific recent_events[].id from the case detail. If omitted, " +
+            "unmangles every event's stack in the case.",
+        },
+        release_id: {
+          type: "string",
+          description:
+            "Optional override of the deploy SHA used to look up sourcemaps. Defaults to each " +
+            "event's deploy_sha. Use this if you uploaded sourcemaps under a different release id.",
+        },
       },
       required: ["case_id"],
       additionalProperties: false,
@@ -883,6 +917,12 @@ export async function dispatchTool(
         });
       case "agentry_get_case":
         return await handleGetCase(String(a.case_id ?? ""));
+      case "agentry_unmangle_stack":
+        return await handleUnmangleStack({
+          case_id: String(a.case_id ?? ""),
+          event_id: a.event_id ? String(a.event_id) : undefined,
+          release_id: a.release_id ? String(a.release_id) : undefined,
+        });
       case "agentry_resolve_case":
         return await handleResolveCase({
           case_id: String(a.case_id ?? ""),
@@ -1442,6 +1482,181 @@ async function handleGetCase(caseId: string): Promise<ToolResult> {
         ? detail.next_actions.join(" / ")
         : `Investigate at ${localPath ?? "(local_path unknown — store it via agentry_create_project)"}.`,
   };
+}
+
+// Translate minified stack frames using sourcemaps stored in agentry. The
+// .map blobs live in agentry's R2; this handler fetches them via the DSN-auth
+// blob endpoint and runs @jridgewell/trace-mapping locally in the MCP process.
+//
+// agentry's role: storage + retrieval. Translation is the agent's job.
+// "Agent" includes the MCP process the user runs locally — the code below is
+// what npm-installs into ~/.npm/_npx/.../node_modules/@agentrysh/mcp/dist/
+// and is fully reviewable. No hidden server-side magic.
+//
+// The result includes a `code_snippet` showing the exact lines that produced
+// the translation, the library version, and the source_urls of the .maps
+// fetched — so an agent or human can reproduce it with the same library and
+// the same map.
+async function handleUnmangleStack(input: {
+  case_id: string;
+  event_id?: string;
+  release_id?: string;
+}): Promise<ToolResult> {
+  if (!input.case_id) {
+    return {
+      error: {
+        code: "missing_case_id",
+        message: "case_id is required",
+        next_action:
+          "Pass case_id from agentry_get_case. The minified stack(s) on its " +
+          "recent_events[] are what get translated.",
+      },
+    };
+  }
+  // Dynamic import keeps trace-mapping out of the cold-start path of every
+  // other tool. Most tool calls won't ever touch sourcemap translation.
+  const { TraceMap, originalPositionFor } = await import("@jridgewell/trace-mapping");
+
+  const cfg = loadConfig();
+  const detail = await api.getCase(cfg, input.case_id);
+  const projectId = detail.project_id;
+  const dsn = lookupDsn(cfg, projectId);
+  if (!dsn) {
+    return {
+      error: {
+        code: "no_dsn",
+        message: `No DSN cached locally for project ${projectId}`,
+        next_action:
+          "agentry_unmangle_stack uses the project DSN (not the api_key) to fetch sourcemap " +
+          "blobs from /v1/sourcemaps/. Re-run agentry_create_project for this project to " +
+          "re-cache the DSN, or call agentry_list_projects to inspect what's stored.",
+      },
+    };
+  }
+
+  // Per-handler memoization: one .map per (release_id, source_url) — many
+  // frames will share the same chunk file, no point fetching twice.
+  const mapCache = new Map<string, InstanceType<typeof TraceMap> | null>();
+
+  const eventsToProcess = input.event_id
+    ? detail.recent_events.filter((e) => e.id === input.event_id)
+    : detail.recent_events;
+
+  const sourcemapsUsed = new Set<string>();
+  let translatedFrameCount = 0;
+  let pendingFrameCount = 0;
+
+  const translated = await Promise.all(
+    eventsToProcess.map(async (ev) => {
+      const releaseId = input.release_id ?? ev.deploy_sha ?? "default";
+      const newStack = await Promise.all(
+        (ev.stack ?? []).map(async (frame) => {
+          const src = normalizeSourceUrl(frame.filename);
+          if (!src || frame.lineno == null) {
+            pendingFrameCount++;
+            return { ...frame, unmangled: false };
+          }
+          const cacheKey = `${releaseId} ${src}`;
+          let map = mapCache.get(cacheKey);
+          if (map === undefined) {
+            const raw = await api
+              .getSourcemapBlob(cfg, projectId, dsn, {
+                releaseId,
+                sourceUrl: src,
+              })
+              .catch(() => null);
+            if (!raw) {
+              map = null;
+              mapCache.set(cacheKey, null);
+            } else {
+              try {
+                map = new TraceMap(JSON.parse(raw));
+                sourcemapsUsed.add(src);
+                mapCache.set(cacheKey, map);
+              } catch {
+                map = null;
+                mapCache.set(cacheKey, null);
+              }
+            }
+          }
+          if (!map) {
+            pendingFrameCount++;
+            return { ...frame, unmangled: false };
+          }
+          const original = originalPositionFor(map, {
+            line: frame.lineno,
+            column: frame.colno ?? 0,
+          });
+          if (original.source == null) {
+            pendingFrameCount++;
+            return { ...frame, unmangled: false };
+          }
+          translatedFrameCount++;
+          return {
+            ...frame,
+            original_file: original.source,
+            original_line: original.line ?? undefined,
+            original_column: original.column ?? undefined,
+            original_name: original.name ?? undefined,
+            unmangled: true,
+          };
+        }),
+      );
+      return { ...ev, stack: newStack };
+    }),
+  );
+
+  return {
+    case_id: input.case_id,
+    events: translated,
+    library: "@jridgewell/trace-mapping@^0.3.25",
+    sourcemaps_used: [...sourcemapsUsed],
+    summary: {
+      events_processed: eventsToProcess.length,
+      frames_translated: translatedFrameCount,
+      frames_passthrough: pendingFrameCount,
+    },
+    code_snippet:
+      "// This is the exact translation logic running in @agentrysh/mcp.\n" +
+      "// You can paste it into scripts/unmangle.ts in your repo and run it\n" +
+      "// against the .map you fetched from /v1/sourcemaps/.../blob.\n" +
+      "import { TraceMap, originalPositionFor } from '@jridgewell/trace-mapping';\n" +
+      "\n" +
+      "// agentry's stack frames use Sentry's shape: filename / lineno / colno.\n" +
+      "function unmangle(rawMapJson: string, frame: { filename: string; lineno: number; colno?: number }) {\n" +
+      "  const map = new TraceMap(JSON.parse(rawMapJson));\n" +
+      "  return originalPositionFor(map, { line: frame.lineno, column: frame.colno ?? 0 });\n" +
+      "}",
+    next_action:
+      translatedFrameCount > 0
+        ? "Read each frame's `original_file` + `original_line` in the local repo (cd to case.local_path " +
+          "and open the file). Frames with `unmangled: false` either had no sourcemap uploaded for that " +
+          "source_url, or the sourcemap didn't have a mapping for that exact line:column. Confirm the " +
+          "sourcemap upload step ran for the release_id (deploy SHA) that emitted this error."
+        : "No frames translated. Either (a) no sourcemaps were uploaded for this release_id, or " +
+          "(b) the source_urls on the stack don't match any uploaded map paths. Check " +
+          "agentry_list_projects + curl GET /v1/sourcemaps/<project_id>/ to see what's stored.",
+  };
+}
+
+// Strip protocol / host / query from a stack-frame `file` URL so it matches
+// uploaded `source_url` keys (which are pathnames). Stack traces from a CDN
+// look like https://cdn.app.com/static/chunks/abc.js?v=1; the upload was for
+// path /static/chunks/abc.js.
+function normalizeSourceUrl(file: string | undefined | null): string | null {
+  if (!file) return null;
+  try {
+    return new URL(file).pathname;
+  } catch {
+    return file.replace(/[?#].*$/, "");
+  }
+}
+
+// Look up the DSN cached locally for a given project (stored at config save
+// time by agentry_create_project / agentry_list_projects). The DSN — not the
+// api_key — is what authenticates sourcemap blob fetches.
+function lookupDsn(cfg: ReturnType<typeof loadConfig>, projectId: string): string | null {
+  return cfg.projects?.[projectId]?.dsn ?? null;
 }
 
 async function handleResolveCase(input: {

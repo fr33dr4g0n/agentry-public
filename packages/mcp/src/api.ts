@@ -110,12 +110,12 @@ export async function apiFetch<T>(
   const url = opts.absoluteUrl ?? `${cfg.server_url.replace(/\/$/, "")}${pathOrUrl}`;
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "user-agent": "agentry-mcp/0.0.5",
+    "user-agent": "agentry-mcp/0.0.6",
   };
   if (!opts.skipAuth) {
     if (opts.dsnAuth) {
       headers["x-sentry-auth"] =
-        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.5`;
+        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.6`;
     } else if (cfg.api_key) {
       headers["authorization"] = `Bearer ${cfg.api_key}`;
     }
@@ -233,6 +233,32 @@ export const api = {
       `/v1/install/sdk/${encodeURIComponent(language)}`,
       { skipAuth: true }
     );
+  },
+  // Fetch a raw .map blob for local translation. Auth is DSN (Bearer) — same
+  // key as ingest. The agent then runs @jridgewell/trace-mapping against the
+  // blob to translate minified frames. agentry never translates server-side.
+  async getSourcemapBlob(
+    cfg: AgentryConfig,
+    projectId: string,
+    publicKey: string,
+    opts: { releaseId?: string; sourceUrl: string }
+  ): Promise<string | null> {
+    const baseUrl = cfg.server_url.replace(/\/$/, "");
+    const qs = new URLSearchParams({
+      source_url: opts.sourceUrl,
+      ...(opts.releaseId ? { release_id: opts.releaseId } : {}),
+    });
+    const url = `${baseUrl}/v1/sourcemaps/${encodeURIComponent(projectId)}/blob?${qs}`;
+    const res = await fetch(url, {
+      headers: { authorization: `Bearer ${publicKey}` },
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      throw new Error(
+        `getSourcemapBlob failed: ${res.status} ${await res.text()}`
+      );
+    }
+    return await res.text();
   },
   // Log ingest. A log with name/message/stack (or a Sentry-shape exception)
   // gets fingerprinted and rolled into a Case. Uses DSN as auth (Bearer or

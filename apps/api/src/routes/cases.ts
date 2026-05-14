@@ -23,7 +23,6 @@ import {
 import type { AppBindings } from "../env.js";
 import { recentDeploysFor } from "./deploys.js";
 import { fireWebhooks } from "../webhooks.js";
-import { translateStack } from "../sourcemaps.js";
 
 // Cases that hang off /v1/projects/:project_id
 // IMPORTANT: this sub-app is mounted at /v1, so the middleware path here is
@@ -152,29 +151,22 @@ caseRouter.get("/:case_id", async (c) => {
 
   // Surface breadcrumbs — they're the "what was happening 30s before" context
   // that turns guessing into diagnosis. Stored as JSON in events.breadcrumbsJson.
-  // Stack frames are translated server-side using any sourcemaps uploaded for
-  // the matching deploy_sha — see translateStack(). Frames whose source URL
-  // we have no map for pass through unchanged.
-  const recentEvents = await Promise.all(
-    recentEventRows.map(async (e) => {
-      const rawStack = safeJsonArray<StackFrame>(e.stack);
-      const stack = rawStack.length
-        ? await translateStack(c.env, row.projectId, e.deploySha, rawStack)
-        : rawStack;
-      return {
-        id: e.id,
-        received_at: e.receivedAt,
-        deploy_sha: e.deploySha,
-        environment: e.environment,
-        message: e.message,
-        stack,
-        breadcrumbs: safeJsonObj(e.breadcrumbsJson),
-        request: safeJsonObj(e.requestJson),
-        tags: safeJsonObj(e.tagsJson),
-        extra: safeJsonObj(e.extraJson),
-      };
-    }),
-  );
+  // Stacks come back RAW — no server-side sourcemap translation. If frames look
+  // minified, the agent calls agentry_unmangle_stack (MCP tool) to translate
+  // locally using the .map files stored in R2. Storage is agentry's job;
+  // translation is the agent's. No hidden code.
+  const recentEvents = recentEventRows.map((e) => ({
+    id: e.id,
+    received_at: e.receivedAt,
+    deploy_sha: e.deploySha,
+    environment: e.environment,
+    message: e.message,
+    stack: safeJsonArray<StackFrame>(e.stack),
+    breadcrumbs: safeJsonObj(e.breadcrumbsJson),
+    request: safeJsonObj(e.requestJson),
+    tags: safeJsonObj(e.tagsJson),
+    extra: safeJsonObj(e.extraJson),
+  }));
 
   const allSuppressions = await db
     .select()
@@ -240,6 +232,11 @@ caseRouter.get("/:case_id", async (c) => {
     },
     next_actions: [
       "Read recent_events to find the offending code path and the deploy_sha that introduced it.",
+      "If recent_events[].stack frames look minified (file paths like `chunks/abc.js`, function names " +
+        "like `t.a` / `n.exports`), call agentry_unmangle_stack with this case_id. It fetches the " +
+        "matching .map from agentry's storage and translates frames LOCALLY in the MCP process — " +
+        "the unmangle code is in the open-source @agentrysh/mcp package, reviewable on npm. " +
+        "agentry stores; the agent translates.",
       "Cross-reference last_deploy_sha with recent_deploys[] to identify the suspect deploy.",
       "git log + git blame from local_path to find when this regressed.",
       "Open a PR fixing it; if uncertain, call PATCH /v1/cases/:id with status=spurious or resolved and a summary.",

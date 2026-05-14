@@ -1,6 +1,6 @@
 {
   "name": "@agentrysh/mcp",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "agentry MCP server — the canonical entry point. Drop it into Claude Code, Cursor or any MCP-compatible AI and your assistant can read your app's errors, analytics and deploys directly.",
   "type": "module",
   "main": "./dist/index.js",
@@ -48,6 +48,7 @@
   },
   "dependencies": {
     "@agentrysh/shared": "^0.0.1",
+    "@jridgewell/trace-mapping": "^0.3.25",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.23.8"
   },

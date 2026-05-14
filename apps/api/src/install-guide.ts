@@ -771,10 +771,12 @@ function sourcemapUploadStep(framework: Framework): InstallGuideStep {
     title: "REQUIRED for client frameworks: upload sourcemaps after each prod build",
     why:
       "Minified bundles produce unreadable stack traces like `at t.a (chunks/abc.js:1:1234)`. " +
-      "agentry translates them server-side from uploaded sourcemaps — no client SDK, no plugin, " +
-      "just a curl loop in CI. Upload one POST per .map file, keyed by release_id (the git SHA " +
-      "of the deploy). At case-read time the server fetches the matching map from R2 and " +
-      "translates each minified frame. Without this, browser cases are useless for debugging.",
+      "agentry STORES the .map files; the agent translates them LOCALLY when investigating a " +
+      "case (via the agentry_unmangle_stack MCP tool, which runs @jridgewell/trace-mapping in " +
+      "the user's MCP process — reviewable code, no server-side magic). No client SDK, no " +
+      "plugin, just a curl loop in CI that POSTs each .map to agentry's storage after build. " +
+      "Without this step, browser cases are minified noise; with it, the agent has full source " +
+      "context the same way it does for server-side errors.",
     action: "run",
     file_hint:
       `Locate your build's source-map output: ${buildHint}. ` +
@@ -806,10 +808,12 @@ function sourcemapUploadStep(framework: Framework): InstallGuideStep {
     validate:
       "After the CI step runs, GET /v1/sourcemaps/{project_id}/?release_id=<sha> should list " +
       "your uploaded maps. Fire a synthetic error from your client (e.g. throw inside a " +
-      "useEffect in production) — open the resulting case via agentry_get_case and the stack " +
-      "should have `original_file` and `original_line` set on each frame that matched a map. " +
-      "Frames with `unmangled: false` either weren't matched (check source_url) or had no " +
-      "map uploaded for that bundle.",
+      "useEffect in production). Then: agentry_get_case → see the minified stack → " +
+      "agentry_unmangle_stack with the same case_id → each frame should have `original_file` + " +
+      "`original_line` set (and `unmangled: true`). The response includes a `code_snippet` " +
+      "showing the exact translation logic — pasteable into scripts/unmangle.ts if you want " +
+      "to reproduce by hand. Frames with `unmangled: false` either weren't matched (check " +
+      "source_url) or had no map uploaded for that bundle.",
   };
 }
 

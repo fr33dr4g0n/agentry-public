@@ -428,6 +428,7 @@ describe("tool list completeness", () => {
         "agentry_suggested_next_steps",
         "agentry_test_webhook",
         "agentry_track_test_event",
+        "agentry_unmangle_stack",
         "agentry_verify_install",
       ].sort()
     );

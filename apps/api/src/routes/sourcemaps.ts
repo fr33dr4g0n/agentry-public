@@ -163,6 +163,61 @@ async function listSourcemaps(c: Parameters<Parameters<typeof router.get>[1]>[0]
   });
 }
 
+// Raw blob fetch — agents call this when they want to translate a minified
+// stack themselves. agentry's role is storage + retrieval; the agent does
+// the translation using whatever library it wants (the @agentrysh/mcp package
+// uses @jridgewell/trace-mapping). Auth: same Bearer DSN as upload.
+router.get("/v1/sourcemaps/:project_id/blob/", (c) => fetchBlob(c));
+router.get("/v1/sourcemaps/:project_id/blob", (c) => fetchBlob(c));
+async function fetchBlob(c: Parameters<Parameters<typeof router.get>[1]>[0]) {
+  const projectId = c.req.param("project_id");
+  await requireDsnForProject(c, projectId);
+
+  if (!c.env.SOURCEMAPS) {
+    throw errors.internal("Sourcemap storage is not configured on this deployment.");
+  }
+
+  const releaseId = (c.req.query("release_id") ?? "default").trim();
+  const sourceUrlRaw = c.req.query("source_url");
+  if (!sourceUrlRaw) {
+    throw errors.invalidPayload({ reason: "source_url query param required" });
+  }
+  let sourceUrl: string;
+  try {
+    sourceUrl = new URL(sourceUrlRaw).pathname;
+  } catch {
+    sourceUrl = sourceUrlRaw.replace(/[?#].*$/, "");
+  }
+
+  const db = getDb(c.env);
+  // Try the specific release first, fall back to "default" upload if any.
+  const candidates = await db
+    .select({ r2Key: sourcemaps.r2Key, releaseId: sourcemaps.releaseId })
+    .from(sourcemaps)
+    .where(
+      and(
+        eq(sourcemaps.projectId, projectId),
+        eq(sourcemaps.sourceUrl, sourceUrl),
+      ),
+    );
+  let pick = candidates.find((r) => r.releaseId === releaseId);
+  if (!pick) pick = candidates.find((r) => r.releaseId === "default");
+  if (!pick) throw errors.notFound("sourcemap");
+
+  const obj = await c.env.SOURCEMAPS!.get(pick.r2Key);
+  if (!obj) throw errors.notFound("sourcemap blob (DB row exists, R2 object missing)");
+
+  // Stream the raw map back. The agent passes it to @jridgewell/trace-mapping
+  // (in the MCP) or any other source-map library to do the translation.
+  return new Response(obj.body, {
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "private, max-age=300",
+      "x-agentry-release-id": pick.releaseId,
+    },
+  });
+}
+
 router.delete("/v1/sourcemaps/:project_id/", (c) => deleteSourcemaps(c));
 router.delete("/v1/sourcemaps/:project_id", (c) => deleteSourcemaps(c));
 async function deleteSourcemaps(c: Parameters<Parameters<typeof router.delete>[1]>[0]) {
