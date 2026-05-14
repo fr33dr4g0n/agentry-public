@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@agentry/db": "*",
-    "@agentry/shared": "*",
+    "@agentrysh/shared": "*",
+    "@jridgewell/trace-mapping": "^0.3.25",
     "@libsql/client": "^0.14.0",
     "drizzle-orm": "^0.36.4",
     "hono": "^4.6.10",

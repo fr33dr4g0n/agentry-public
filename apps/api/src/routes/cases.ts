@@ -5,8 +5,8 @@ import {
   UpdateCaseRequestSchema,
   errors,
   uuidv7,
-} from "@agentry/shared";
-import type { CaseStatus, StackFrame } from "@agentry/shared";
+} from "@agentrysh/shared";
+import type { CaseStatus, StackFrame } from "@agentrysh/shared";
 import {
   agentRuns,
   cases,
@@ -18,10 +18,12 @@ import {
   requireApiKey,
   requireCaseAccess,
   requireProjectAccess,
+  waitUntilOf,
 } from "../middleware.js";
 import type { AppBindings } from "../env.js";
 import { recentDeploysFor } from "./deploys.js";
 import { fireWebhooks } from "../webhooks.js";
+import { translateStack } from "../sourcemaps.js";
 
 // Cases that hang off /v1/projects/:project_id
 // IMPORTANT: this sub-app is mounted at /v1, so the middleware path here is
@@ -150,18 +152,29 @@ caseRouter.get("/:case_id", async (c) => {
 
   // Surface breadcrumbs — they're the "what was happening 30s before" context
   // that turns guessing into diagnosis. Stored as JSON in events.breadcrumbsJson.
-  const recentEvents = recentEventRows.map((e) => ({
-    id: e.id,
-    received_at: e.receivedAt,
-    deploy_sha: e.deploySha,
-    environment: e.environment,
-    message: e.message,
-    stack: safeJsonArray<StackFrame>(e.stack),
-    breadcrumbs: safeJsonObj(e.breadcrumbsJson),
-    request: safeJsonObj(e.requestJson),
-    tags: safeJsonObj(e.tagsJson),
-    extra: safeJsonObj(e.extraJson),
-  }));
+  // Stack frames are translated server-side using any sourcemaps uploaded for
+  // the matching deploy_sha — see translateStack(). Frames whose source URL
+  // we have no map for pass through unchanged.
+  const recentEvents = await Promise.all(
+    recentEventRows.map(async (e) => {
+      const rawStack = safeJsonArray<StackFrame>(e.stack);
+      const stack = rawStack.length
+        ? await translateStack(c.env, row.projectId, e.deploySha, rawStack)
+        : rawStack;
+      return {
+        id: e.id,
+        received_at: e.receivedAt,
+        deploy_sha: e.deploySha,
+        environment: e.environment,
+        message: e.message,
+        stack,
+        breadcrumbs: safeJsonObj(e.breadcrumbsJson),
+        request: safeJsonObj(e.requestJson),
+        tags: safeJsonObj(e.tagsJson),
+        extra: safeJsonObj(e.extraJson),
+      };
+    }),
+  );
 
   const allSuppressions = await db
     .select()
@@ -274,19 +287,26 @@ caseRouter.patch("/:case_id", async (c) => {
   const row = after[0];
   if (!row) throw errors.notFound("case");
 
-  // Fire case.resolved if the status just transitioned into "resolved".
-  if (before && before.status !== "resolved" && row.status === "resolved") {
-    const waitUntil = (p: Promise<unknown>) =>
-      c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
+  // Fire case.<new_status> on any transition. Special case: resolved → !resolved
+  // emits case.reopened (not case.<other>) so subscribers have a single "this is
+  // back" signal regardless of which state it lands in.
+  if (before && before.status !== row.status) {
+    const eventName =
+      before.status === "resolved" && row.status !== "resolved"
+        ? "case.reopened"
+        : `case.${row.status}`;
+    const waitUntil = waitUntilOf(c);
     await fireWebhooks(
       c.env,
       row.projectId,
-      "case.resolved",
+      eventName,
       {
         case_id: row.id,
         fingerprint: row.fingerprint,
         error_type: row.errorType,
         message: row.message,
+        status: row.status,
+        previous_status: before.status,
         agent_summary: row.agentSummary,
         pr_url: row.prUrl,
         last_deploy_sha: row.lastDeploySha,

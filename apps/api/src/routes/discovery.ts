@@ -36,11 +36,11 @@ Each customer has their own PostHog project, isolated from other customers.
 | column | type | meaning |
 |---|---|---|
 | event | string | The event name (e.g. \`signup_completed\`, \`page_view\`). Required. |
-| distinct_id | string | Stable per-user identifier. Browser SDK persists in localStorage. |
+| distinct_id | string | Stable per-user identifier. Agent-generated browser helper persists in localStorage. |
 | timestamp | DateTime | When the event happened. |
 | properties | Map<string, ?> | Arbitrary key/value sent with the event. |
 
-Common properties on browser events (auto-set by @agentry/browser):
+Common properties on browser events (set by the agent-generated client helper):
 - \`$current_url\`, \`$pathname\`, \`$referrer\`, \`$user_agent\`, \`$language\`
 
 ## HogQL primer
@@ -350,26 +350,64 @@ router.get("/v1/install/guide", (c) => {
   return c.json(buildInstallGuide(framework, signalTypes));
 });
 
+// Server-side JS helper. No `import { agentry } from '@agentry/node'` — agentry
+// has NO SDK by design. This is a ~30-line fetch-based helper the agent pastes
+// into the customer's repo at `src/lib/agentry.ts`. Same shape as the helpers
+// for python/ruby/go/etc. Three POST endpoints, no client library to vet.
 router.get("/v1/install/sdk/node", (c) => {
   const code =
-    "import { agentry } from '@agentry/node';\n" +
+    "// src/lib/agentry.ts — server-side, native fetch (Node 20+), no deps.\n" +
+    "const URL = process.env.AGENTRY_URL!;\n" +
+    "const DSN = process.env.AGENTRY_DSN!;\n" +
+    "const PID = DSN.split('_')[1].split('.')[0];\n" +
+    "const GIT_SHA = process.env.GIT_SHA\n" +
+    "  ?? process.env.VERCEL_GIT_COMMIT_SHA\n" +
+    "  ?? process.env.RENDER_GIT_COMMIT\n" +
+    "  ?? process.env.HEROKU_SLUG_COMMIT\n" +
+    "  ?? 'unknown';\n" +
+    "const ENV = process.env.NODE_ENV ?? 'production';\n" +
     "\n" +
-    "agentry.init({\n" +
-    "  dsn: process.env.AGENTRY_DSN!,\n" +
-    "  deploySha: process.env.GIT_SHA,\n" +
-    "  environment: process.env.NODE_ENV,\n" +
-    "});\n" +
+    "type Kind = 'logs' | 'analytics' | 'deploys';\n" +
     "\n" +
-    "process.on('uncaughtException', (err) => agentry.capture(err));\n" +
-    "process.on('unhandledRejection', (err) => agentry.capture(err as Error));\n";
+    "export async function agentry(kind: Kind, payload: object): Promise<void> {\n" +
+    "  try {\n" +
+    "    await fetch(`${URL}/v1/${kind}/${PID}/`, {\n" +
+    "      method: 'POST',\n" +
+    "      headers: {\n" +
+    "        authorization: `Bearer ${DSN}`,\n" +
+    "        'content-type': 'application/json',\n" +
+    "        'user-agent': 'agentry-node/1.0',\n" +
+    "      },\n" +
+    "      body: JSON.stringify(payload),\n" +
+    "    });\n" +
+    "  } catch { /* never let monitoring crash the request */ }\n" +
+    "}\n" +
+    "\n" +
+    "export function captureError(err: unknown, extra?: object): Promise<void> {\n" +
+    "  const e = err instanceof Error ? err : new Error(String(err));\n" +
+    "  return agentry('logs', {\n" +
+    "    name: e.name, message: e.message, stack: e.stack,\n" +
+    "    environment: ENV, deploy_sha: GIT_SHA, extra,\n" +
+    "  });\n" +
+    "}\n" +
+    "\n" +
+    "export function track(event: string, distinct_id: string,\n" +
+    "                     properties: Record<string, unknown> = {}): Promise<void> {\n" +
+    "  return agentry('analytics', { event, distinct_id, properties });\n" +
+    "}\n" +
+    "\n" +
+    "// At your app's main entrypoint, AFTER importing the helper:\n" +
+    "process.on('uncaughtException', (err) => captureError(err, { uncaught: true }));\n" +
+    "process.on('unhandledRejection', (err) => captureError(err, { unhandled: true }));\n";
 
   return c.json({
     language: "node",
     code,
-    required_env: ["AGENTRY_DSN", "GIT_SHA"],
-    readme_url: "https://github.com/agentry/agentry#readme",
+    required_env: ["AGENTRY_URL", "AGENTRY_DSN", "GIT_SHA"],
     next_action:
-      "Paste this into your app's entrypoint. Set AGENTRY_DSN to the DSN you got from POST /v1/projects.",
+      "Paste into src/lib/agentry.ts. Set AGENTRY_DSN + AGENTRY_URL env vars. " +
+      "Then call agentry_install_guide for the full instrumentation checklist " +
+      "(events to track, deploy attribution, sourcemap upload).",
   });
 });
 
@@ -414,25 +452,74 @@ router.get("/v1/privacy/disclosure", (c) => {
   });
 });
 
+// Client-side JS helper. No `import { agentry } from '@agentry/browser'` —
+// agentry has NO SDK by design. Pastes into src/lib/agentry.ts. Uses
+// sendBeacon for analytics (survives pagehide), keepalive fetch otherwise.
 router.get("/v1/install/sdk/browser", (c) => {
   const code =
-    "import { agentry } from '@agentry/browser';\n" +
+    "// src/lib/agentry.ts — client-side, native fetch, no dependencies.\n" +
+    "const URL = (import.meta as any).env?.VITE_AGENTRY_URL\n" +
+    "         ?? process.env.NEXT_PUBLIC_AGENTRY_URL\n" +
+    "         ?? process.env.REACT_APP_AGENTRY_URL!;\n" +
+    "const DSN = (import.meta as any).env?.VITE_AGENTRY_DSN\n" +
+    "         ?? process.env.NEXT_PUBLIC_AGENTRY_DSN\n" +
+    "         ?? process.env.REACT_APP_AGENTRY_DSN!;\n" +
+    "const PID = DSN.split('_')[1].split('.')[0];\n" +
     "\n" +
-    "agentry.init({\n" +
-    "  // Build-time env: NEXT_PUBLIC_AGENTRY_DSN / VITE_AGENTRY_DSN / REACT_APP_AGENTRY_DSN\n" +
-    "  dsn: import.meta.env?.VITE_AGENTRY_DSN ?? process.env.NEXT_PUBLIC_AGENTRY_DSN!,\n" +
-    "  environment: import.meta.env?.MODE ?? process.env.NODE_ENV,\n" +
-    "  // autoCaptureGlobalErrors defaults to true — listens to window 'error' + 'unhandledrejection'.\n" +
-    "});\n";
+    "type Kind = 'logs' | 'analytics' | 'deploys';\n" +
+    "\n" +
+    "export function agentry(kind: Kind, payload: object): void {\n" +
+    "  const body = JSON.stringify(payload);\n" +
+    "  // sendBeacon survives pagehide / navigation. Best for analytics.\n" +
+    "  if (kind === 'analytics' && typeof navigator !== 'undefined' && navigator.sendBeacon) {\n" +
+    "    navigator.sendBeacon(`${URL}/v1/${kind}/${PID}/`,\n" +
+    "      new Blob([body], { type: 'application/json' }));\n" +
+    "    return;\n" +
+    "  }\n" +
+    "  fetch(`${URL}/v1/${kind}/${PID}/`, {\n" +
+    "    method: 'POST',\n" +
+    "    headers: {\n" +
+    "      authorization: `Bearer ${DSN}`,\n" +
+    "      'content-type': 'application/json',\n" +
+    "      'user-agent': 'agentry-browser/1.0',\n" +
+    "    },\n" +
+    "    body, keepalive: true,\n" +
+    "  }).catch(() => {});\n" +
+    "}\n" +
+    "\n" +
+    "export function getDistinctId(): string {\n" +
+    "  let id = localStorage.getItem('agentry_did');\n" +
+    "  if (!id) { id = crypto.randomUUID(); localStorage.setItem('agentry_did', id); }\n" +
+    "  return id;\n" +
+    "}\n" +
+    "\n" +
+    "export function captureError(err: unknown, extra?: object): void {\n" +
+    "  const e = err instanceof Error ? err : new Error(String(err));\n" +
+    "  agentry('logs', {\n" +
+    "    name: e.name, message: e.message, stack: e.stack,\n" +
+    "    user: { id: getDistinctId() },\n" +
+    "    tags: { url: location.href, ua: navigator.userAgent }, extra,\n" +
+    "  });\n" +
+    "}\n" +
+    "\n" +
+    "export function track(event: string, distinct_id: string,\n" +
+    "                     properties: Record<string, unknown> = {}): void {\n" +
+    "  agentry('analytics', { event, distinct_id, properties });\n" +
+    "}\n" +
+    "\n" +
+    "// At your app entrypoint, AFTER importing captureError:\n" +
+    "window.addEventListener('error', (e) => captureError(e.error ?? e.message, { source: 'window.error' }));\n" +
+    "window.addEventListener('unhandledrejection', (e) => captureError(e.reason, { source: 'unhandledrejection' }));\n";
 
   return c.json({
     language: "browser",
     code,
     required_env: ["NEXT_PUBLIC_AGENTRY_DSN or VITE_AGENTRY_DSN or REACT_APP_AGENTRY_DSN"],
-    readme_url: "https://github.com/agentry/agentry#readme",
     next_action:
-      "Paste this into your app's client entrypoint, BEFORE other imports. " +
-      "DSN is build-time injected — it appears in the final bundle, which is fine: it only grants ingest, never reads.",
+      "Paste into src/lib/agentry.ts. DSN is build-time injected and appears in the bundle " +
+      "(public token, ingest-only — safe). For unmangled stack traces, upload your sourcemaps " +
+      "via POST /v1/sourcemaps/{project_id}/ after each build — agentry translates minified " +
+      "stacks server-side.",
   });
 });
 

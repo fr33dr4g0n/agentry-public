@@ -14,6 +14,15 @@ routes = [
 MAX_BODY_BYTES = "262144"
 # Hard cap on suppressions per project — bounds the scan on every ingest.
 MAX_SUPPRESSIONS_PER_PROJECT = "200"
+# Hard cap on sourcemap upload size (8MB). Sourcemaps can be large; this is
+# the upper bound, larger uploads get 413.
+MAX_SOURCEMAP_BYTES = "8388608"
+
+# R2 bucket for browser sourcemaps. Translation of minified stack traces
+# happens server-side at case read-time using the maps stored here.
+[[r2_buckets]]
+binding = "SOURCEMAPS"
+bucket_name = "agentry-sourcemaps"
 
 # Daily snapshot of per-user usage totals. 01:10 UTC keeps it clear of midnight
 # cron contention while still landing within the same UTC day as the period.

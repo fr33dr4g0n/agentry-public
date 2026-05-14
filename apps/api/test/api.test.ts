@@ -89,12 +89,15 @@ describe("discovery", () => {
     expect(txt).toContain("MCP");
   });
 
-  it("GET /v1/install/sdk/node returns code snippet", async () => {
+  it("GET /v1/install/sdk/node returns the fetch-based helper", async () => {
     const res = await call("/v1/install/sdk/node");
     expect(res.status).toBe(200);
     const json = (await res.json()) as { language: string; code: string; required_env: string[] };
     expect(json.language).toBe("node");
-    expect(json.code).toContain("agentry.init");
+    // No SDK install — agentry-as-a-helper.
+    expect(json.code).not.toContain("@agentry/node");
+    expect(json.code).toContain("export async function agentry");
+    expect(json.code).toContain("captureError");
     expect(json.required_env).toContain("AGENTRY_DSN");
   });
 

@@ -1,7 +1,8 @@
 {
   "name": "@agentry/browser",
   "version": "0.0.1",
-  "private": false,
+  "//": "DEPRECATED — agentry has NO SDK. The agent generates a fetch helper at install time. This package is retained as an internal reference and is not published.",
+  "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,7 +19,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agentry/shared": "*"
+    "@agentrysh/shared": "*"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

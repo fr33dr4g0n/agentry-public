@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { AgentryError, errors } from "@agentry/shared";
+import { AgentryError, errors } from "@agentrysh/shared";
 import authRoutes from "./routes/auth.js";
 import projectRoutes from "./routes/projects.js";
 import { caseRouter, projectScopedCases } from "./routes/cases.js";
@@ -16,6 +16,11 @@ import webhookRoutes from "./routes/webhooks.js";
 import healthRoutes from "./routes/health.js";
 import alertRoutes from "./routes/alerts.js";
 import userRoutes from "./routes/users.js";
+import feedbackRoutes from "./routes/feedback.js";
+import adminRoutes from "./routes/admin.js";
+import usageRoutes from "./routes/usage.js";
+import sourcemapRoutes from "./routes/sourcemaps.js";
+import { snapshotAllUsers } from "./usage.js";
 import type { AppBindings, Env } from "./env.js";
 
 export function createApp() {
@@ -84,42 +89,31 @@ export function createApp() {
   // Auth/management endpoints (cases, projects, auth) intentionally omit CORS:
   // browsers shouldn't be calling them, and a same-origin browser context
   // would just echo a CORS error which surfaces the misuse fast.
-  app.use(
-    "/v1/store/*",
-    cors({
-      origin: "*",
-      allowMethods: ["POST", "OPTIONS"],
-      allowHeaders: ["authorization", "content-type", "x-sentry-auth"],
-      maxAge: 86400,
-    }),
-  );
-  app.use(
-    "/v1/track/*",
-    cors({
-      origin: "*",
-      allowMethods: ["POST", "OPTIONS"],
-      allowHeaders: ["authorization", "content-type", "x-sentry-auth"],
-      maxAge: 86400,
-    }),
-  );
-  app.use(
-    "/v1/deploys/*",
-    cors({
-      origin: "*",
-      allowMethods: ["POST", "OPTIONS"],
-      allowHeaders: ["authorization", "content-type", "x-sentry-auth"],
-      maxAge: 86400,
-    }),
-  );
-  app.use(
-    "/v1/log/*",
-    cors({
-      origin: "*",
-      allowMethods: ["POST", "OPTIONS"],
-      allowHeaders: ["authorization", "content-type", "x-sentry-auth"],
-      maxAge: 86400,
-    }),
-  );
+  // First-party ingest paths.
+  for (const path of ["/v1/logs/*", "/v1/analytics/*", "/v1/deploys/*"]) {
+    app.use(
+      path,
+      cors({
+        origin: "*",
+        allowMethods: ["POST", "OPTIONS"],
+        allowHeaders: ["authorization", "content-type", "x-sentry-auth"],
+        maxAge: 86400,
+      }),
+    );
+  }
+  // Drop-in aliases for other ecosystems' SDKs. /v1/store/ is Sentry-wire-protocol,
+  // /v1/track/ is PostHog-shaped, /v1/log/ is the catch-all auto-detect path.
+  for (const path of ["/v1/store/*", "/v1/track/*", "/v1/log/*"]) {
+    app.use(
+      path,
+      cors({
+        origin: "*",
+        allowMethods: ["POST", "OPTIONS"],
+        allowHeaders: ["authorization", "content-type", "x-sentry-auth"],
+        maxAge: 86400,
+      }),
+    );
+  }
 
   // Discovery / root
   app.route("/", discoveryRoutes);
@@ -170,6 +164,18 @@ export function createApp() {
   // User identification views (per-project + per-case).
   app.route("/", userRoutes);
 
+  // Agent-filed feedback (POST + GET, API-key auth).
+  app.route("/", feedbackRoutes);
+
+  // User-facing usage view (api-key auth).
+  app.route("/", usageRoutes);
+
+  // Admin-only usage inspection (ADMIN_TOKEN auth).
+  app.route("/", adminRoutes);
+
+  // Sourcemap upload / list / delete (DSN auth, project-scoped).
+  app.route("/", sourcemapRoutes);
+
   return app;
 }
 
@@ -177,4 +183,31 @@ const app = createApp();
 
 export default {
   fetch: app.fetch,
+  // Cron-triggered daily snapshot. Schedule lives in wrangler.toml [triggers].
+  // Snapshots are idempotent per (user, UTC-day), so re-runs on the same day
+  // just overwrite. Errors are logged but never thrown — cron retries handle it.
+  scheduled: async (_event: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const written = await snapshotAllUsers(env);
+          console.log(
+            JSON.stringify({
+              ts: new Date().toISOString(),
+              cron: "usage_snapshot",
+              users_snapshotted: written,
+            }),
+          );
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              ts: new Date().toISOString(),
+              cron: "usage_snapshot",
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        }
+      })(),
+    );
+  },
 } satisfies ExportedHandler<Env>;

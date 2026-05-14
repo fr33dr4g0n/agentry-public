@@ -13,8 +13,16 @@ export interface Env {
   // Body / scan caps
   MAX_BODY_BYTES?: string;
   MAX_SUPPRESSIONS_PER_PROJECT?: string;
+  MAX_SOURCEMAP_BYTES?: string;
+  // R2 bucket for browser sourcemaps (uploaded per-release, fetched at case
+  // read-time to translate minified stack traces).
+  SOURCEMAPS?: R2Bucket;
   // Test backdoor — only enabled in local dev. Production secret store must NOT set this.
   ENABLE_TEST_LOGIN?: string;
+  // Admin token gating /admin/* endpoints. If unset, admin routes refuse all
+  // requests. Compared against the Authorization: Bearer header via constant-time
+  // comparison. Set with `wrangler secret put ADMIN_TOKEN`.
+  ADMIN_TOKEN?: string;
 }
 
 // Hono context variable map.

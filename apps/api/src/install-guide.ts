@@ -755,6 +755,64 @@ function verifySteps(): InstallGuideStep[] {
 // infer, custom internal events not visible in the code). This is the only
 // place in the install where the agent should ask the user a question. After
 // this, it moves into suggest_next_builds without asking permission.
+// Sourcemap upload — only client-side frameworks need this. agentry has no
+// SDK, so there's no auto-upload plugin; you POST the .map files yourself
+// after every production build. The server stores them in R2 and translates
+// minified frames at case-read time.
+function sourcemapUploadStep(framework: Framework): InstallGuideStep {
+  const buildHint =
+    framework === "next" || framework === "next-client"
+      ? ".next/static/chunks/**/*.js.map (after `next build`)"
+      : framework === "react"
+      ? "dist/assets/*.js.map (Vite) or build/static/js/*.js.map (CRA)"
+      : "wherever your bundler emits source maps (dist/, build/, public/static/)";
+  return {
+    id: "upload_sourcemaps_for_minified_stacks",
+    title: "REQUIRED for client frameworks: upload sourcemaps after each prod build",
+    why:
+      "Minified bundles produce unreadable stack traces like `at t.a (chunks/abc.js:1:1234)`. " +
+      "agentry translates them server-side from uploaded sourcemaps — no client SDK, no plugin, " +
+      "just a curl loop in CI. Upload one POST per .map file, keyed by release_id (the git SHA " +
+      "of the deploy). At case-read time the server fetches the matching map from R2 and " +
+      "translates each minified frame. Without this, browser cases are useless for debugging.",
+    action: "run",
+    file_hint:
+      `Locate your build's source-map output: ${buildHint}. ` +
+      "Then wire a CI step that POSTs each .map to the agentry deployment after build, " +
+      "BEFORE you wipe the build artifacts. Run it AFTER each deploy too, since release_id " +
+      "should match the deploy SHA. The shell snippet below loops over every .map; adapt the " +
+      "source_url to match what your bundler emits (Next.js: `/_next/static/chunks/...`; Vite: " +
+      "`/assets/...`).",
+    command:
+      "# Run from your CI after `npm run build` / `next build` / `vite build`.\n" +
+      'export AGENTRY_URL="https://api.agentry.sh"\n' +
+      'export AGENTRY_DSN="agnt_<projectId>.<token>"   # same DSN as ingest\n' +
+      'export RELEASE_ID="${GITHUB_SHA:-${VERCEL_GIT_COMMIT_SHA:-$(git rev-parse HEAD)}}"\n' +
+      'export PROJECT_ID="${AGENTRY_DSN#agnt_}"; export PROJECT_ID="${PROJECT_ID%%.*}"\n' +
+      "\n" +
+      "# Loop every .map under your build output.\n" +
+      "find .next/static -name '*.js.map' -o -name '*.css.map' | while read map; do\n" +
+      '  # source_url must match the path the browser fetches the .js from.\n' +
+      "  # Next.js: /_next/static/...  Vite: /assets/...\n" +
+      "  source_url=\"/_next${map#.next}\"\n" +
+      "  source_url=\"${source_url%.map}\"\n" +
+      '  curl -fsS -X POST \\\n' +
+      '    "$AGENTRY_URL/v1/sourcemaps/$PROJECT_ID/?release_id=$RELEASE_ID&source_url=$source_url" \\\n' +
+      '    -A "agentry-ci/1.0" \\\n' +
+      '    -H "Authorization: Bearer $AGENTRY_DSN" \\\n' +
+      '    -H "Content-Type: application/json" \\\n' +
+      '    --data-binary "@$map" >/dev/null && echo "uploaded $source_url"\n' +
+      "done",
+    validate:
+      "After the CI step runs, GET /v1/sourcemaps/{project_id}/?release_id=<sha> should list " +
+      "your uploaded maps. Fire a synthetic error from your client (e.g. throw inside a " +
+      "useEffect in production) — open the resulting case via agentry_get_case and the stack " +
+      "should have `original_file` and `original_line` set on each frame that matched a map. " +
+      "Frames with `unmangled: false` either weren't matched (check source_url) or had no " +
+      "map uploaded for that bundle.",
+  };
+}
+
 function checkinWithUserStep(): InstallGuideStep {
   return {
     id: "checkin_with_user",
@@ -2627,6 +2685,15 @@ function buildHttpGuide(framework: Framework, signalTypes: Set<string>): Install
         "Within 60s, agentry_list_deploys should return at least one deploy with the current " +
         "git SHA. Then fire a synthetic case and confirm its `last_deploy_sha` matches.",
     });
+  }
+
+  // Client-side bundles get minified at build time, so stack traces in
+  // production look like `at t.a (chunks/abc.js:1:1234)`. agentry translates
+  // them server-side from uploaded sourcemaps. Required step for any
+  // browser/react/next-client install; harmless to skip for pure server-side
+  // frameworks.
+  if (signalTypes.has("logs") && isClientFramework(framework)) {
+    steps.push(sourcemapUploadStep(framework));
   }
 
   if (signalTypes.has("logs") || signalTypes.has("analytics")) {

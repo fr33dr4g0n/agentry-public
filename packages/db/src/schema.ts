@@ -11,6 +11,9 @@ export const users = sqliteTable("users", {
   githubUsername: text("github_username").notNull(),
   email: text("email"),
   avatarUrl: text("avatar_url"),
+  // Billing plan. "free" | "pro" | "scale". No enforcement wired up yet; the
+  // meter just observes. Limits live in apps/api/src/plans.ts.
+  plan: text("plan").notNull().default("free"),
   createdAt: integer("created_at").notNull().default(now),
 }, (t) => ({
   githubIdIdx: uniqueIndex("users_github_id_idx").on(t.githubId),
@@ -126,6 +129,10 @@ export const deploys = sqliteTable("deploys", {
   message: text("message"),
   url: text("url"),
   actor: text("actor"),
+  // Open JSON column for unknown top-level fields the customer attaches
+  // (commit_count, ci_run_id, build_id, ...). Stored verbatim, queryable via
+  // json_extract. Keeps the "send any extra fields" promise honest for deploys.
+  extraJson: text("extra_json"),
   receivedAt: integer("received_at").notNull().default(now),
 }, (t) => ({
   projTimeIdx: index("deploys_proj_time_idx").on(t.projectId, t.receivedAt),
@@ -142,6 +149,27 @@ export const usageCounters = sqliteTable("usage_counters", {
   count: integer("count").notNull().default(0),
 }, (t) => ({
   pk: uniqueIndex("usage_counters_pk").on(t.projectId, t.period, t.signalType),
+}));
+
+// Daily snapshot of per-user usage. One row per (user, day). Values are the
+// *cumulative monthly* counts as of snapshot time — daily-delta charts are a
+// read-time computation (snapshot[d] - snapshot[d-1], with month-rollover reset).
+// Written by the daily cron in apps/api/src/index.ts.
+export const usageSnapshots = sqliteTable("usage_snapshots", {
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // ISO day, e.g. "2026-05-13"
+  day: text("day").notNull(),
+  // YYYY-MM, matches the period the cumulative counts belong to
+  period: text("period").notNull(),
+  errors: integer("errors").notNull().default(0),
+  analytics: integer("analytics").notNull().default(0),
+  deploys: integer("deploys").notNull().default(0),
+  totalEvents: integer("total_events").notNull().default(0),
+  plan: text("plan").notNull().default("free"),
+  capturedAt: integer("captured_at").notNull().default(now),
+}, (t) => ({
+  pk: uniqueIndex("usage_snapshots_pk").on(t.userId, t.day),
+  dayIdx: index("usage_snapshots_day_idx").on(t.day),
 }));
 
 // Alert definitions. Customer's cron calls /evaluate to fire the webhook
@@ -202,6 +230,47 @@ export const posthogProjects = sqliteTable("posthog_projects", {
   posthogProjIdx: uniqueIndex("posthog_projects_ph_id_idx").on(t.posthogProjectId),
 }));
 
+// Browser sourcemaps uploaded after each build. Used to translate minified
+// stack traces server-side at case read-time. Keyed by (project_id, release_id,
+// source_url) — release_id is typically the git SHA so multiple deploys can
+// coexist and old releases can be GC'd by deploy_sha. The map itself is in R2;
+// this row is the index.
+export const sourcemaps = sqliteTable("sourcemaps", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  releaseId: text("release_id").notNull(),     // typically git SHA; "default" if not provided
+  sourceUrl: text("source_url").notNull(),     // bundle URL or pathname (e.g. /_next/static/chunks/abc.js)
+  r2Key: text("r2_key").notNull(),             // R2 object key
+  sizeBytes: integer("size_bytes").notNull(),
+  uploadedAt: integer("uploaded_at").notNull().default(now),
+}, (t) => ({
+  projReleaseIdx: index("sourcemaps_proj_release_idx").on(t.projectId, t.releaseId),
+  lookupIdx: uniqueIndex("sourcemaps_lookup_idx").on(t.projectId, t.releaseId, t.sourceUrl),
+}));
+
+// Agent-sent feedback. Triggered when a user expresses a feature request
+// or when the agent hits 2+ failed attempts at the same task. Tied to a
+// user if the request is API-key authed; the project_id is optional context.
+export const feedback = sqliteTable("feedback", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
+  projectId: text("project_id").references(() => projects.id, { onDelete: "set null" }),
+  kind: text("kind", { enum: ["missing_feature", "bug", "ux_friction", "other"] })
+    .notNull()
+    .default("other"),
+  message: text("message").notNull(),          // user's complaint, verbatim where possible
+  agentNote: text("agent_note"),               // agent's summary of what it was trying to do
+  toolName: text("tool_name"),                 // which MCP tool was involved, if any
+  attemptCount: integer("attempt_count"),      // how many failed attempts at the same task
+  claudeSessionId: text("claude_session_id"),  // for de-duping bursts from one session
+  createdAt: integer("created_at").notNull().default(now),
+  resolved: integer("resolved").notNull().default(0),
+  resolution: text("resolution"),
+}, (t) => ({
+  userIdx: index("feedback_user_idx").on(t.userId, t.createdAt),
+  kindIdx: index("feedback_kind_idx").on(t.kind, t.resolved, t.createdAt),
+}));
+
 export type User = typeof users.$inferSelect;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type Project = typeof projects.$inferSelect;
@@ -213,4 +282,6 @@ export type Deploy = typeof deploys.$inferSelect;
 export type PosthogProject = typeof posthogProjects.$inferSelect;
 export type Webhook = typeof webhooks.$inferSelect;
 export type UsageCounter = typeof usageCounters.$inferSelect;
+export type UsageSnapshot = typeof usageSnapshots.$inferSelect;
 export type Alert = typeof alerts.$inferSelect;
+export type Feedback = typeof feedback.$inferSelect;
