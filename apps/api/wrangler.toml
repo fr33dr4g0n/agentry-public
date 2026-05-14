@@ -3,15 +3,31 @@ main = "src/index.ts"
 compatibility_date = "2025-05-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Bind the worker to api.agentry.sh. Cloudflare auto-creates the routing record
+# under the agentry.sh zone (which must already be active on the same CF account).
+routes = [
+  { pattern = "api.agentry.sh", custom_domain = true },
+]
+
 [vars]
 # Hard cap on ingest body size in bytes (256KB). Anything larger gets 413.
 MAX_BODY_BYTES = "262144"
 # Hard cap on suppressions per project — bounds the scan on every ingest.
 MAX_SUPPRESSIONS_PER_PROJECT = "200"
 
+# Daily snapshot of per-user usage totals. 01:10 UTC keeps it clear of midnight
+# cron contention while still landing within the same UTC day as the period.
+[triggers]
+crons = ["10 1 * * *"]
+
 # Secrets (set via `wrangler secret put`):
 #   TURSO_DATABASE_URL
 #   TURSO_AUTH_TOKEN
 #   GITHUB_CLIENT_ID
 #   GITHUB_CLIENT_SECRET
+#   AGENTRY_TOKEN_ENC_KEY      (encrypts webhook signing secrets at rest)
+#   POSTHOG_HOST               (after PostHog is up)
+#   POSTHOG_ORG_ID
+#   POSTHOG_MASTER_API_KEY
+#   ADMIN_TOKEN                (Bearer token for /admin/* endpoints)
 # Do NOT set ENABLE_TEST_LOGIN in production — it's a backdoor for local e2e.
