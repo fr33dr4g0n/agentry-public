@@ -11,6 +11,9 @@ Agent-first error monitoring. The user's own Claude Code (running this MCP serve
 ## Hard rules
 - **AGENTS FIRST.** No interface that requires a human to open a browser. MCP is canonical.
 - **Never run an LLM server-side** in the API or worker. The agent runs in the user's Claude Code.
+- **No opaque server-side compute.** The HTTP API is the data plane only — storage, retrieval, and deterministic queries. Any transformation the user might want to audit (stack unmangling, fingerprinting, formatting, anything that "translates" data) lives in the MCP package, where the code is on npm and reviewable in `node_modules/@agentrysh/mcp/dist/`. The principle:
+  - If it's **storage / retrieval / a query** → HTTP API endpoint, then a 1:1 MCP tool that wraps it (parity).
+  - If it's a **transformation that benefits from being review-able** → MCP-only local compute, no HTTP equivalent. Adding it to the API re-introduces server-side magic.
 - **Update STATUS.md** at the end of every meaningful sub-task.
 - **Append to docs/decisions.md** when you make a non-trivial choice.
 

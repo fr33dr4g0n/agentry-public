@@ -4,6 +4,52 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-13 — Data plane vs. compute plane: API stores, MCP transforms
+
+**Problem.** As we add features (sourcemap unmangling, fingerprinting, formatting…) there's a fork in the road for every one: does the transformation run server-side (worker has the code) or agent-side (MCP runs it locally)? Without a rule, the codebase drifts toward "convenient on the server" — which means opaque blobs of compute the user can't review. That contradicts the agent-first wedge: the whole pitch is that the agent IS the SDK, not a vendor.
+
+**Trigger.** Built server-side sourcemap unmangling (`apps/api/src/sourcemaps.ts` + `translateStack` hook in `GET /v1/cases/:id`). It worked, but it hid the translation logic inside a worker the user can't inspect — same anti-pattern as a vendor SDK, just relocated. User feedback was direct: "no magic. agent needs to be able to untangle itself, magical hidden pieces of code fuck that up." Reverted the server translator; moved translation to the MCP via `agentry_unmangle_stack` (uses `@jridgewell/trace-mapping` locally; code lives in `~/.npm/_npx/.../node_modules/@agentrysh/mcp/dist/`, reviewable per install).
+
+**Decision.** Two-layer rule for every new feature:
+
+- **HTTP API = data plane.** Storage, retrieval, deterministic queries. No opaque compute. Curl/CI/cron talks to this. If it changes the meaning of stored data, it doesn't belong here.
+- **MCP = data plane + local compute.** Every HTTP route gets a 1:1 MCP tool wrapper (parity, so agents don't drop to bash for storage ops). Plus transformations that run in the agent's MCP process — code on npm, reviewable, version-pinned.
+
+The two practical questions, applied to any new feature:
+1. **Storage / retrieval / a query?** → HTTP API endpoint, then a 1:1 MCP tool wrapping it.
+2. **A transformation that benefits from being review-able?** → MCP-only local compute. No HTTP equivalent. The user (and the agent) can read the exact code that produced the result, and reproduce it offline with the same library.
+
+**Reference implementation (current):**
+- `POST/GET/DELETE /v1/sourcemaps/{project_id}/` + `GET …/blob` — pure data plane, R2-backed.
+- `agentry_upload_sourcemap / list_sourcemaps / delete_sourcemaps` — 1:1 MCP wrappers (parity).
+- `agentry_unmangle_stack` — MCP-only compute. Fetches the blob via the data-plane endpoint, runs `@jridgewell/trace-mapping` locally, returns translated frames + the exact `code_snippet` that produced them + the library version.
+
+**Why not put translation on the API as a convenience.** Was tempting (one call vs two). But the agent's extra tool call is cheap; the trust cost of hidden compute is not. The first time a translation returns "wrong" results and the user can't see how, the product is broken. Keeping all transforms in MCP also means we never have to support "the API translated it differently than the agent would have" — there's one translation path.
+
+**Where this lives.** Encoded as a hard rule in `CLAUDE.md` so every future feature design hits it.
+
+---
+
+## 2026-05-13 — Pricing tiers, "event" definition, and observe-only metering
+
+**Tiers (USD/mo, monthly events, retention):** Free 0 / 100k / 180d. Pro 39 / 1M / 365d. Scale 149 / 10M / 730d.
+
+**What counts as an event.** One ingested record from any of `/v1/logs`, `/v1/track`, `/v1/deploys`, or the catch-all `/v1/log`. Agent queries (MCP reads) and outbound webhooks are **not** metered.
+
+**Why ingest-only.** The cost we pay is storage × retention. Metering queries would create the wrong incentive — the agent would ration investigation to preserve quota, exactly when the user is in the value moment. Rate-limit reads at the API layer if needed; don't price them.
+
+**No seats, no project limits.** Single-tenant-per-user model where the agent *is* the user. Free aggregates events across any number of projects — the scarce resource is total ingest volume, not project count.
+
+**Retention as the wedge.** Floor at 6 months (Free) because "has this regressed before?" — the question agentry exists to answer — needs >30d history. Ceiling at 24mo (Scale); beyond that storage cost compounds faster than marginal value.
+
+**Observe-only first.** `plan` column on `users` defaults to `free`. Limits are defined in `apps/api/src/plans.ts` but **not enforced at ingest**. Goal: see actual volume distributions for 1–2 months before deciding whether the gut-feel 100k/1M/10M tiers are right.
+
+**Daily snapshots.** New `usage_snapshots(user_id, day, period, errors, analytics, deploys, total_events, plan)`. Cron at 01:10 UTC. Stores cumulative monthly counts as of snapshot time; per-day deltas computed at read time (with month-rollover reset). Lets us chart growth over time, which "right now" counters can't show.
+
+**Admin surface.** `/admin/*` gated by `ADMIN_TOKEN` env secret — if unset, all admin routes 404 (don't advertise the surface). Endpoints: `GET /admin/usage` (cross-user current period), `GET /admin/usage/:user_id` (per-project breakdown), `GET /admin/usage/snapshots` (system-wide or per-user series), `POST /admin/usage/snapshot` (force run), `GET /admin/plans` (limits table), `PATCH /admin/users/:user_id/plan` (move a user).
+
+**User-facing.** `GET /v1/usage` returns the authenticated user's current-period totals + plan limits + pct used. `GET /v1/usage/history?days=N` returns their snapshot series. Designed for the MCP agent to surface "you're at X% of plan" without round-tripping admin endpoints.
+
 ## 2026-05-10 — User identification
 
 Knowing which user hit which bug (and how many) is the difference between "we have an error" and "we have a customer impact estimate." Added throughout:
@@ -192,3 +238,15 @@ Original `agnt_<projectId>_<token>` collided with project ids containing undersc
 **DSN scoping.** `agnt_<projectId>.<token>`. Ingest-only. Never grants reads.
 
 **Sentry-protocol-compatible ingest.** `IngestEventSchema.passthrough()` for forward compat.
+
+## 2026-05-12 — Agent-filed feedback channel
+
+**Problem.** We have no way to learn what users want that agentry can't do today. Agents discover gaps silently — a missing tool, a recipe that doesn't fit, a UX dead-end — and the user reroutes without telling us. We need a structured channel.
+
+**Decision.** Add a `feedback` table + `POST/GET /v1/feedback` + two MCP tools (`agentry_send_feedback`, `agentry_list_feedback`). Auth: API key (so feedback is tied to a user). The agent fires it in exactly two situations: (a) the user explicitly requests a feature or expresses frustration, (b) the agent has failed 2+ times at the same task. Tool description spells out both triggers and instructs the agent not to spam.
+
+**Why not a separate datastore.** We already run Turso/libSQL via Drizzle. Spinning up a second store (CF D1, KV, separate Turso DB) would have meant double the operational surface for what is fundamentally one small table. Lean on the existing schema.
+
+**Fields:** kind ∈ {missing_feature, bug, ux_friction, other}, message (user verbatim), agent_note (agent's own context), tool_name, attempt_count, project_id, claude_session_id. Plus resolved/resolution for triage.
+
+**Operator view.** No dashboard. `agentry_list_feedback` (agent-first per our rule) and direct SQL on the underlying table are the two paths. If volume grows, the agent can build a dashboard the same way it builds any other surface — on top of the MCP.
