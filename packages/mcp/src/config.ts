@@ -5,9 +5,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentryConfig } from "@agentry/shared";
+import type { AgentryConfig } from "@agentrysh/shared";
 
-const DEFAULT_SERVER_URL = "https://agentry-api.henrikh.workers.dev";
+const DEFAULT_SERVER_URL = "https://api.agentry.sh";
 
 export function getConfigPath(): string {
   if (process.env.AGENTRY_CONFIG_PATH) return process.env.AGENTRY_CONFIG_PATH;

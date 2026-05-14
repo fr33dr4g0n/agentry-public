@@ -10,7 +10,7 @@ import type {
   IngestEventPayload,
   RecordAgentRunRequest,
   RecordSuppressionRequest,
-} from "@agentry/shared";
+} from "@agentrysh/shared";
 
 export interface ApiError extends Error {
   status: number;
@@ -65,7 +65,14 @@ export interface CreateProjectResponse {
   id: string;
   name: string;
   dsn: string;
-  default_branch: string;
+  // Sentry-DSN-formatted URL for drop-in compatibility with existing Sentry SDKs.
+  sentry_dsn_url?: string;
+  // First-party typed endpoints — what new MCP code should use.
+  logs_url?: string;
+  analytics_url?: string;
+  deploys_url?: string;
+  default_branch?: string;
+  install_snippet?: string;
   next_action?: string;
 }
 
@@ -105,12 +112,12 @@ export async function apiFetch<T>(
   const url = opts.absoluteUrl ?? `${cfg.server_url.replace(/\/$/, "")}${pathOrUrl}`;
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "user-agent": "agentry-mcp/0.0.1",
+    "user-agent": "agentry-mcp/0.0.3",
   };
   if (!opts.skipAuth) {
     if (opts.dsnAuth) {
       headers["x-sentry-auth"] =
-        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.1`;
+        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.3`;
     } else if (cfg.api_key) {
       headers["authorization"] = `Bearer ${cfg.api_key}`;
     }
@@ -229,8 +236,9 @@ export const api = {
       { skipAuth: true }
     );
   },
-  // Sentry-protocol ingest. Uses DSN public key as auth via x-sentry-auth header.
-  // The store endpoint URL embeds the project id and the host comes from the DSN.
+  // Log ingest. A log with name/message/stack (or a Sentry-shape exception)
+  // gets fingerprinted and rolled into a Case. Uses DSN as auth (Bearer or
+  // x-sentry-auth header). /v1/store/ remains as a Sentry-protocol drop-in.
   storeEvent(
     cfg: AgentryConfig,
     projectId: string,
@@ -238,7 +246,7 @@ export const api = {
     event: IngestEventPayload
   ): Promise<{ id: string; case_id?: string }> {
     return apiFetch<{ id: string; case_id?: string }>(cfg, "", {
-      absoluteUrl: `${cfg.server_url.replace(/\/$/, "")}/v1/store/${encodeURIComponent(projectId)}/`,
+      absoluteUrl: `${cfg.server_url.replace(/\/$/, "")}/v1/logs/${encodeURIComponent(projectId)}/`,
       method: "POST",
       body: event,
       dsnAuth: publicKey,
@@ -274,7 +282,8 @@ export const api = {
     );
   },
 
-  // Analytics: forward an event (DSN-auth, hits PostHog via the agentry proxy)
+  // Analytics: forward an event (DSN-auth, hits PostHog via the agentry proxy).
+  // First-party path is /v1/analytics/; /v1/track/ remains a PostHog-shaped alias.
   trackEvent(
     cfg: AgentryConfig,
     projectId: string,
@@ -282,7 +291,7 @@ export const api = {
     body: { event: string; distinct_id?: string; properties?: Record<string, unknown> }
   ): Promise<{ ok: boolean }> {
     return apiFetch<{ ok: boolean }>(cfg, "", {
-      absoluteUrl: `${cfg.server_url.replace(/\/$/, "")}/v1/track/${encodeURIComponent(projectId)}/`,
+      absoluteUrl: `${cfg.server_url.replace(/\/$/, "")}/v1/analytics/${encodeURIComponent(projectId)}/`,
       method: "POST",
       body,
       dsnAuth: publicKey,
@@ -446,6 +455,44 @@ export const api = {
       `/v1/projects/${encodeURIComponent(projectId)}/alerts/${encodeURIComponent(id)}/evaluate`,
       { method: "POST", body: {} },
     );
+  },
+  // Agent-filed feedback.
+  sendFeedback(
+    cfg: AgentryConfig,
+    body: {
+      kind: "missing_feature" | "bug" | "ux_friction" | "other";
+      message: string;
+      agent_note?: string;
+      tool_name?: string;
+      attempt_count?: number;
+      project_id?: string;
+      claude_session_id?: string;
+    },
+  ): Promise<{ id: string; received_at: number; next_action?: string }> {
+    return apiFetch(cfg, "/v1/feedback", { method: "POST", body });
+  },
+  listFeedback(
+    cfg: AgentryConfig,
+    opts?: { limit?: number; kind?: string; resolved?: boolean },
+  ): Promise<{ count: number; feedback: Array<Record<string, unknown>>; next_action?: string }> {
+    const qs = [
+      opts?.limit ? `limit=${encodeURIComponent(opts.limit)}` : null,
+      opts?.kind ? `kind=${encodeURIComponent(opts.kind)}` : null,
+      typeof opts?.resolved === "boolean" ? `resolved=${opts.resolved}` : null,
+    ].filter(Boolean).join("&");
+    return apiFetch(cfg, `/v1/feedback${qs ? "?" + qs : ""}`);
+  },
+  // Discovery of subscribable event names (server-emitted + recent analytics).
+  listEventNames(
+    cfg: AgentryConfig,
+    projectId: string,
+  ): Promise<{
+    server_emitted: string[];
+    analytics_events: Array<{ event: string; count: number; last_seen: number }>;
+    wildcards: string[];
+    next_action?: string;
+  }> {
+    return apiFetch(cfg, `/v1/projects/${encodeURIComponent(projectId)}/event-names`);
   },
 };
 

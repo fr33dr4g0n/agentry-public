@@ -1,21 +1,53 @@
 {
-  "name": "@agentry/mcp",
-  "version": "0.0.1",
-  "private": true,
-  "description": "Agentry stdio MCP server — the canonical UX. Runs in the user's Claude Code via stdio.",
+  "name": "@agentrysh/mcp",
+  "version": "0.0.3",
+  "description": "agentry MCP server — the canonical entry point. Drop it into Claude Code, Cursor or any MCP-compatible AI and your assistant can read your app's errors, analytics and deploys directly.",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
     "agentry-mcp": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -b",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "tsc -b"
+  },
+  "keywords": [
+    "agentry",
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "cursor",
+    "observability",
+    "error-tracking",
+    "analytics"
+  ],
+  "license": "MIT",
+  "author": "Henrik Harju <harjuhenrik@gmail.com>",
+  "homepage": "https://agentry.sh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentry/agentry.git",
+    "directory": "packages/mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/agentry/agentry/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
-    "@agentry/shared": "*",
+    "@agentrysh/shared": "^0.0.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.23.8"
   },
@@ -23,8 +55,5 @@
     "@types/node": "^22.9.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"
-  },
-  "engines": {
-    "node": ">=20"
   }
 }

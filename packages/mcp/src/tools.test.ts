@@ -313,7 +313,7 @@ describe("error propagation", () => {
 });
 
 describe("agentry_capture_test_event", () => {
-  it("uses the locally stored DSN to hit /v1/store/:id/", async () => {
+  it("uses the locally stored DSN to hit /v1/logs/:id/ (first-party path)", async () => {
     fs.mkdirSync(path.dirname(tmpConfigPath), { recursive: true });
     fs.writeFileSync(
       tmpConfigPath,
@@ -338,7 +338,7 @@ describe("agentry_capture_test_event", () => {
       {
         body: { id: "evt_1", case_id: "case_99" },
         assertUrl: (url) => {
-          expect(url).toBe("https://test.example.com/v1/store/proj_xyz/");
+          expect(url).toBe("https://test.example.com/v1/logs/proj_xyz/");
         },
         assertInit: (init) => {
           const headers = init.headers as Record<string, string>;
@@ -406,6 +406,8 @@ describe("tool list completeness", () => {
         "agentry_list_alerts",
         "agentry_list_cases",
         "agentry_list_deploys",
+        "agentry_list_event_names",
+        "agentry_list_feedback",
         "agentry_list_projects",
         "agentry_list_recipes",
         "agentry_list_webhooks",
@@ -421,6 +423,7 @@ describe("tool list completeness", () => {
         "agentry_resolve_case",
         "agentry_rotate_key",
         "agentry_run_recipe",
+        "agentry_send_feedback",
         "agentry_status",
         "agentry_suggested_next_steps",
         "agentry_test_webhook",

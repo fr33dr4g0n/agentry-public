@@ -2,8 +2,8 @@
 // Each tool's response is shaped to give the calling agent enough context to
 // choose its next action without re-asking the user.
 
-import type { AgentryConfig, AgentryProjectConfig } from "@agentry/shared";
-import { parseDsn } from "@agentry/shared";
+import type { AgentryConfig, AgentryProjectConfig } from "@agentrysh/shared";
+import { parseDsn } from "@agentrysh/shared";
 import { api, type ApiError } from "./api.js";
 import { loadConfig, saveConfig } from "./config.js";
 import { getOnboardingHint } from "./onboarding.js";
@@ -99,13 +99,20 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
   {
     name: "agentry_install_sdk",
     description:
-      "Get the SDK install snippet for a language. Returns code + env vars the user should paste into their app.",
+      "Get install instructions for the target runtime. Returns ready-to-paste code + env vars. " +
+      "Works for every HTTP-capable runtime: Node/TypeScript gets the typed SDK; Python, Ruby, Go, PHP, etc. " +
+      "get DSN-based HTTP instructions that hit the same ingest endpoint. By design — the ingest protocol is " +
+      "plain HTTP so there's no runtime that's 'unsupported'. Call this with whatever language you detected; " +
+      "do NOT warn the user that their stack is unsupported. For framework-specific checklists " +
+      "(Next.js, FastAPI, Django, Rails, …) prefer `agentry_install_guide`.",
     inputSchema: {
       type: "object",
       properties: {
         language: {
           type: "string",
-          description: "Language target. Defaults to 'node' (the only supported option in v0).",
+          description:
+            "Runtime / language detected from the repo. Examples: 'node', 'python', 'ruby', 'go', 'php', 'rust'. " +
+            "Defaults to 'node'. Any value is accepted — non-Node languages get DSN/HTTP instructions.",
         },
       },
       additionalProperties: false,
@@ -298,14 +305,18 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     name: "agentry_install_guide",
     description:
       "Get the comprehensive, framework-aware install checklist. Returns ordered steps with file hints, " +
-      "code snippets, and validation criteria. The agent should read this BEFORE editing any customer code.",
+      "code snippets, and validation criteria. Covers Node, Next.js, Express, Python (FastAPI, Flask, Django), " +
+      "Ruby/Rails, Go, and a generic HTTP fallback for anything else. The agent should read this BEFORE editing " +
+      "any customer code, regardless of stack.",
     inputSchema: {
       type: "object",
       properties: {
         framework: {
           type: "string",
-          enum: ["node", "next", "express"],
-          description: "Detected from package.json. Defaults to 'node'.",
+          description:
+            "Framework detected from the repo. Common values: 'node', 'next', 'express', 'python', 'fastapi', " +
+            "'flask', 'django', 'ruby', 'rails', 'go', 'generic'. Any value is accepted; unknown frameworks " +
+            "fall back to generic HTTP/DSN instructions.",
         },
         signal_types: {
           type: "array",
@@ -511,24 +522,50 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
   {
     name: "agentry_register_webhook",
     description:
-      "Register a webhook URL to receive signed POSTs when interesting things happen. " +
-      "Events: 'case.created' (new error fingerprint), 'case.resolved' (case status flips to resolved), " +
-      "'deploy.recorded'. Returns the signing_secret ONCE — store it. The customer's endpoint must " +
-      "verify X-Agentry-Signature: t=<unix>,v1=<hex> using HMAC-SHA256(rawBody, signing_secret). " +
-      "This is the foundation for automation flows like auto-fix-on-error.",
+      "Register a webhook URL to receive signed POSTs when interesting events happen. " +
+      "Event names are FREE-FORM strings — subscribe to anything the substrate emits: " +
+      "(a) server events: case.created, case.resolved, case.investigating, case.spurious, " +
+      "case.ignored, case.reopened, deploy.recorded, alert.triggered, alert.recovered. " +
+      "(b) any analytics event name your customer's app emits (signup_completed, purchase, " +
+      "checkout_started, video_uploaded, ...). " +
+      "(c) wildcards: \"*\" (everything), \"case.*\" (all case transitions), \"alert.*\" (all alerts). " +
+      "Call agentry_list_event_names first to discover what's actually flowing. You can also " +
+      "subscribe BEFORE an event exists — the hook will fire as soon as the app emits it. " +
+      "Returns signing_secret ONCE — store it. Endpoint verifies X-Agentry-Signature: t=<unix>,v1=<hex> " +
+      "via HMAC-SHA256(rawBody, signing_secret).",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string", description: "https:// URL to receive deliveries" },
         events: {
           type: "array",
-          items: { type: "string", enum: ["case.created", "case.resolved", "deploy.recorded"] },
-          description: "Defaults to all three.",
+          items: { type: "string" },
+          description:
+            "Required. Non-empty array of event names. Any string is valid; wildcards \"*\" and " +
+            "\"<namespace>.*\" supported. Use agentry_list_event_names to discover names.",
         },
-        description: { type: "string" },
+        description: { type: "string", description: "What this hook is for (human-readable note)." },
         project_id: { type: "string", description: "Defaults to local default project." },
       },
-      required: ["url"],
+      required: ["url", "events"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_list_event_names",
+    description:
+      "Discover which event names you can subscribe a webhook to. Returns: " +
+      "(a) server_emitted — canonical names emitted by agentry itself (case.*, deploy.recorded, alert.*); " +
+      "(b) analytics_events — distinct analytics event names seen in the last 30 days, with count + last_seen; " +
+      "(c) wildcards — supported wildcard patterns. " +
+      "Call this BEFORE agentry_register_webhook so you don't subscribe to a name that doesn't exist. " +
+      "If you want a hook on an event that's not yet flowing, subscribe to its expected name — the hook " +
+      "will fire as soon as the customer's app emits it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Defaults to local default project." },
+      },
       additionalProperties: false,
     },
   },
@@ -578,6 +615,81 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
       "auto-fix-on-error, deploy regression alerts, weekly digests, etc. Each pattern includes a " +
       "ready-to-deploy Cloudflare Worker / Vercel function template the agent can drop into the customer's repo.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "agentry_send_feedback",
+    description:
+      "File feedback for the agentry team when something doesn't work or is missing. " +
+      "Call this in exactly two situations: " +
+      "(1) the user explicitly asks for a feature that doesn't exist or expresses frustration that agentry " +
+      "isn't doing what they want ('I wish it could…', 'why doesn't it…', 'this doesn't work', " +
+      "'feature request: …'); " +
+      "(2) you have made 2+ failed attempts at the same task — same MCP tool returning errors, or repeatedly " +
+      "failing to find a recipe/route for what the user asked. " +
+      "File it ONCE per distinct issue per session — don't spam. Quote the user verbatim in `message` where " +
+      "possible. Don't apologize repeatedly to the user; just tell them you've logged it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["missing_feature", "bug", "ux_friction", "other"],
+          description:
+            "missing_feature = capability doesn't exist; bug = something behaves wrong; " +
+            "ux_friction = works but is awkward/confusing; other = anything else.",
+        },
+        message: {
+          type: "string",
+          description:
+            "The user's complaint in their own words where possible. If you're filing this after " +
+            "2+ failed attempts, write a one-line summary of what they were trying to do.",
+        },
+        agent_note: {
+          type: "string",
+          description:
+            "Optional: what YOU (the agent) were trying to do, which tools you called, what failed. " +
+            "Helps the agentry team reproduce.",
+        },
+        tool_name: {
+          type: "string",
+          description: "If a specific MCP tool was involved, name it (e.g. 'agentry_run_recipe').",
+        },
+        attempt_count: {
+          type: "number",
+          description: "How many times you tried the same task before giving up. Required for the 2+-failure path.",
+        },
+        project_id: {
+          type: "string",
+          description: "Optional project context. Defaults to none.",
+        },
+        claude_session_id: {
+          type: "string",
+          description:
+            "Optional: a stable identifier for this Claude session, so duplicate feedback from the same " +
+            "session can be grouped server-side.",
+        },
+      },
+      required: ["kind", "message"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_list_feedback",
+    description:
+      "List feedback YOU (this user) have filed. Operator view — use it to review what's been logged " +
+      "and decide what to address. Returns most recent first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Defaults to 50, max 500." },
+        kind: {
+          type: "string",
+          enum: ["missing_feature", "bug", "ux_friction", "other"],
+        },
+        resolved: { type: "boolean", description: "Filter on resolved status." },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "agentry_suggested_next_steps",
@@ -674,7 +786,7 @@ function requireProjectFromConfig(
   return { id: picked.id, project: picked.project };
 }
 
-// Build a Sentry-shaped synthetic event suitable for hitting /v1/store/:id/.
+// Build a Sentry-shaped synthetic event suitable for hitting /v1/logs/:id/.
 function buildSyntheticEvent(): Record<string, unknown> {
   const eventId = `agentrytest-${Date.now().toString(36)}`;
   return {
@@ -883,6 +995,8 @@ export async function dispatchTool(
         });
       case "agentry_list_webhooks":
         return await handleListWebhooks(a.project_id ? String(a.project_id) : undefined);
+      case "agentry_list_event_names":
+        return await handleListEventNames(a.project_id ? String(a.project_id) : undefined);
       case "agentry_test_webhook":
         return await handleTestWebhook({
           webhook_id: String(a.webhook_id ?? ""),
@@ -895,6 +1009,22 @@ export async function dispatchTool(
         });
       case "agentry_automation_docs":
         return await handleAutomationDocs();
+      case "agentry_send_feedback":
+        return await handleSendFeedback({
+          kind: String(a.kind ?? "other") as never,
+          message: String(a.message ?? ""),
+          agent_note: a.agent_note ? String(a.agent_note) : undefined,
+          tool_name: a.tool_name ? String(a.tool_name) : undefined,
+          attempt_count: typeof a.attempt_count === "number" ? a.attempt_count : undefined,
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          claude_session_id: a.claude_session_id ? String(a.claude_session_id) : undefined,
+        });
+      case "agentry_list_feedback":
+        return await handleListFeedback({
+          limit: typeof a.limit === "number" ? a.limit : undefined,
+          kind: a.kind ? String(a.kind) : undefined,
+          resolved: typeof a.resolved === "boolean" ? a.resolved : undefined,
+        });
       default:
         return {
           error: {
@@ -1166,25 +1296,70 @@ async function handleCreateProject(input: {
       dsn: resp.dsn,
       default_branch: projectConfig.default_branch,
       local_path: projectConfig.local_path,
+      // First-party typed endpoints — agent should prefer these over /v1/log/.
+      // Same DSN authenticates all three. POST any-language HTTP client; no SDK.
+      logs_url: resp.logs_url,
+      analytics_url: resp.analytics_url,
+      deploys_url: resp.deploys_url,
+      // Sentry-DSN URL kept for drop-in into existing Sentry SDKs.
+      sentry_dsn_url: resp.sentry_dsn_url,
     },
     install_snippet: install,
     next_action:
       resp.next_action ??
-      "DSN stored locally. Paste the install snippet into the app, set AGENTRY_DSN, then call `agentry_capture_test_event` to verify ingest.",
+      "DSN stored locally. Three typed endpoints (logs_url / analytics_url / deploys_url) " +
+      "all authenticate with this DSN. Paste the install snippet, set AGENTRY_DSN, then call " +
+      "`agentry_capture_test_event` to verify ingest.",
   };
 }
 
 async function handleInstallSdk(language: string): Promise<ToolResult> {
   const cfg = loadConfig();
-  const resp = await api.getInstallSnippet(cfg, language);
-  return {
-    language: resp.language,
-    code: resp.code,
-    env_vars: resp.env_vars,
-    next_action:
-      "Paste `code` into the user's project, then set the env_vars (AGENTRY_DSN especially). " +
-      "Then call `agentry_capture_test_event` to verify ingest.",
-  };
+  const lang = (language || "node").toLowerCase();
+  // Node has a first-party typed SDK — return that directly.
+  try {
+    const resp = await api.getInstallSnippet(cfg, lang);
+    return {
+      language: resp.language,
+      code: resp.code,
+      env_vars: resp.env_vars,
+      next_action:
+        "Paste `code` into the user's project, then set the env_vars (AGENTRY_DSN especially). " +
+        "Then call `agentry_capture_test_event` to verify ingest.",
+    };
+  } catch (err) {
+    // No first-party SDK for this language — fall back to the framework guide,
+    // which always includes a working DSN/HTTP path. Every HTTP-capable runtime
+    // is supported by design; the agent should NOT tell the user it isn't.
+    const status = (err as { status?: number }).status;
+    if (status !== 404) throw err;
+    const guide = await api.getInstallGuide(cfg, lang).catch(() => null);
+    if (guide) {
+      return {
+        language: lang,
+        approach: "dsn_http",
+        note:
+          `No typed SDK for ${lang} — using the DSN/HTTP path. The ingest endpoint is plain HTTP, ` +
+          `so any runtime that can POST JSON is fully supported.`,
+        guide,
+        next_action:
+          "Walk the customer through `guide.steps` in order. After they paste the DSN env var and " +
+          "wire the error handler, call `agentry_capture_test_event` to confirm ingest works.",
+      };
+    }
+    // Last-resort generic snippet — keeps the tool useful even if the API is degraded.
+    return {
+      language: lang,
+      approach: "dsn_http",
+      note:
+        `Use the DSN/HTTP path. Any runtime that can POST JSON works; ${lang} has no first-party SDK ` +
+        `but the ingest endpoint is plain HTTP.`,
+      env_vars: { AGENTRY_DSN: "<from agentry_create_project or dashboard>" },
+      next_action:
+        "Call `agentry_install_guide` with the detected framework to get an ordered checklist, " +
+        "then `agentry_capture_test_event` to verify.",
+    };
+  }
 }
 
 async function handleListCases(input: {
@@ -1891,6 +2066,17 @@ async function handleListWebhooks(projectId?: string): Promise<ToolResult> {
   return { project_id: pid, ...resp };
 }
 
+async function handleListEventNames(projectId?: string): Promise<ToolResult> {
+  const cfg = loadConfig();
+  if (!cfg.api_key) {
+    return { error: { code: "no_key", message: "No API key.", next_action: "Call `agentry_login`." } };
+  }
+  const pid = pickProjectId(cfg, projectId);
+  if (!pid) return { error: { code: "no_project", message: "No project specified.", next_action: "Pass project_id." } };
+  const resp = await api.listEventNames(cfg, pid);
+  return { project_id: pid, ...resp };
+}
+
 async function handleTestWebhook(input: { webhook_id: string; project_id?: string }): Promise<ToolResult> {
   if (!input.webhook_id) {
     return { error: { code: "missing_webhook_id", message: "webhook_id is required.", next_action: "Pass webhook id from agentry_list_webhooks." } };
@@ -2128,4 +2314,73 @@ async function handleDeleteAlert(input: { alert_id: string; project_id?: string 
   if (!pid) return { error: { code: "no_project", message: "No project specified.", next_action: "Pass project_id." } };
   const resp = await api.deleteAlert(cfg, pid, input.alert_id);
   return { ...resp, project_id: pid };
+}
+
+async function handleSendFeedback(input: {
+  kind: "missing_feature" | "bug" | "ux_friction" | "other";
+  message: string;
+  agent_note?: string;
+  tool_name?: string;
+  attempt_count?: number;
+  project_id?: string;
+  claude_session_id?: string;
+}): Promise<ToolResult> {
+  if (!input.message?.trim()) {
+    return {
+      error: {
+        code: "missing_message",
+        message: "message is required.",
+        next_action: "Pass the user's complaint verbatim, or a one-line summary of what they were trying to do.",
+      },
+    };
+  }
+  const cfg = loadConfig();
+  if (!cfg.api_key) {
+    return {
+      error: {
+        code: "no_key",
+        message: "No API key — feedback is tied to a user, so login first.",
+        next_action: "Call agentry_login.",
+      },
+    };
+  }
+  const body: Parameters<typeof api.sendFeedback>[1] = {
+    kind: input.kind,
+    message: input.message.trim(),
+  };
+  if (input.agent_note) body.agent_note = input.agent_note;
+  if (input.tool_name) body.tool_name = input.tool_name;
+  if (typeof input.attempt_count === "number") body.attempt_count = input.attempt_count;
+  if (input.project_id) body.project_id = input.project_id;
+  else if (cfg.default_project_id) body.project_id = cfg.default_project_id;
+  if (input.claude_session_id) body.claude_session_id = input.claude_session_id;
+
+  const resp = await api.sendFeedback(cfg, body);
+  return {
+    ok: true,
+    feedback_id: resp.id,
+    received_at: resp.received_at,
+    next_action:
+      resp.next_action ??
+      "Feedback recorded. Tell the user one short line ('Logged that as feedback for the agentry team.') and move on.",
+  };
+}
+
+async function handleListFeedback(input: {
+  limit?: number;
+  kind?: string;
+  resolved?: boolean;
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  if (!cfg.api_key) {
+    return {
+      error: { code: "no_key", message: "No API key.", next_action: "Call agentry_login." },
+    };
+  }
+  const opts: Parameters<typeof api.listFeedback>[1] = {};
+  if (typeof input.limit === "number") opts.limit = input.limit;
+  if (input.kind) opts.kind = input.kind;
+  if (typeof input.resolved === "boolean") opts.resolved = input.resolved;
+  const resp = await api.listFeedback(cfg, opts);
+  return resp;
 }

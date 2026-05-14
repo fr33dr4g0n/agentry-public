@@ -1,4 +1,4 @@
-import { parseDsn, type IngestEventPayload } from "@agentry/shared";
+import { parseDsn, type IngestEventPayload } from "@agentrysh/shared";
 import { buildEventPayload, type CaptureContext } from "./payload.js";
 
 function serializeForLog(payload: unknown): unknown {
@@ -35,7 +35,7 @@ export interface InitOptions {
   flushIntervalMs?: number;
 }
 
-const DEFAULT_SERVER_URL = "https://api.agentry.dev";
+const DEFAULT_SERVER_URL = "https://api.agentry.sh";
 const MAX_BUFFERED_EVENTS = 1000;
 const DEFAULT_FLUSH_INTERVAL_MS = 5000;
 
