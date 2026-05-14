@@ -1301,8 +1301,6 @@ async function handleCreateProject(input: {
       logs_url: resp.logs_url,
       analytics_url: resp.analytics_url,
       deploys_url: resp.deploys_url,
-      // Sentry-DSN URL kept for drop-in into existing Sentry SDKs.
-      sentry_dsn_url: resp.sentry_dsn_url,
     },
     install_snippet: install,
     next_action:

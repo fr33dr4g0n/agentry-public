@@ -65,8 +65,6 @@ export interface CreateProjectResponse {
   id: string;
   name: string;
   dsn: string;
-  // Sentry-DSN-formatted URL for drop-in compatibility with existing Sentry SDKs.
-  sentry_dsn_url?: string;
   // First-party typed endpoints — what new MCP code should use.
   logs_url?: string;
   analytics_url?: string;
@@ -112,12 +110,12 @@ export async function apiFetch<T>(
   const url = opts.absoluteUrl ?? `${cfg.server_url.replace(/\/$/, "")}${pathOrUrl}`;
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "user-agent": "agentry-mcp/0.0.3",
+    "user-agent": "agentry-mcp/0.0.4",
   };
   if (!opts.skipAuth) {
     if (opts.dsnAuth) {
       headers["x-sentry-auth"] =
-        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.3`;
+        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.4`;
     } else if (cfg.api_key) {
       headers["authorization"] = `Bearer ${cfg.api_key}`;
     }

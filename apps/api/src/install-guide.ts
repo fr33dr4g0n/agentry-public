@@ -705,6 +705,7 @@ function deploySteps(framework: Framework): InstallGuideStep[] {
   if: success() && github.ref == 'refs/heads/main'
   run: |
     curl -fsSL -X POST "https://your-agentry-host/v1/deploys/$AGENTRY_PROJECT_ID/" \\
+      -A "agentry-ci/1.0" \\
       -H "Authorization: Bearer $AGENTRY_DSN" \\
       -H "content-type: application/json" \\
       -d '{
@@ -1061,7 +1062,13 @@ def send(kind, payload):
             }
         requests.post(
             f"{AGENTRY_URL}/v1/{kind}/{PROJECT_ID}/",
-            headers={"authorization": f"Bearer {AGENTRY_DSN}", "content-type": "application/json"},
+            headers={
+                "authorization": f"Bearer {AGENTRY_DSN}",
+                "content-type": "application/json",
+                # MUST set a custom User-Agent. Cloudflare's Browser Integrity Check
+                # 403s default urllib/curl/python-urllib UAs with CF error 1010.
+                "user-agent": "agentry-python/1.0",
+            },
             data=json.dumps(payload),
             timeout=5,
         )
@@ -1115,7 +1122,13 @@ module Agentry
       }
     end
     uri = URI("#{URL}/v1/#{kind}/#{PROJECT_ID}/")
-    req = Net::HTTP::Post.new(uri, "authorization" => "Bearer #{DSN}", "content-type" => "application/json")
+    # MUST set a custom User-Agent. Cloudflare's Browser Integrity Check 403s
+    # default Ruby Net::HTTP UAs ('Ruby') with CF error 1010.
+    req = Net::HTTP::Post.new(uri,
+      "authorization" => "Bearer #{DSN}",
+      "content-type" => "application/json",
+      "user-agent" => "agentry-ruby/1.0",
+    )
     req.body = payload.to_json
     Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https") { |h| h.request(req) }
   rescue => _
@@ -1180,6 +1193,9 @@ func Send(kind string, payload any) {
     req, _ := http.NewRequest("POST", url+"/v1/"+kind+"/"+projectID+"/", bytes.NewReader(body))
     req.Header.Set("authorization", "Bearer "+dsn)
     req.Header.Set("content-type", "application/json")
+    // MUST set a custom User-Agent. Cloudflare's Browser Integrity Check 403s
+    // default Go net/http UAs ('Go-http-client/1.1') with CF error 1010.
+    req.Header.Set("user-agent", "agentry-go/1.0")
     res, err := client.Do(req)
     if err != nil { return } // never crash the app
     res.Body.Close()
@@ -1236,7 +1252,12 @@ class Agentry {
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload),
-            CURLOPT_HTTPHEADER => ["authorization: Bearer $dsn", "content-type: application/json"],
+            // user-agent MUST be set — Cloudflare's BIC 403s defaults with CF error 1010.
+            CURLOPT_HTTPHEADER => [
+                "authorization: Bearer $dsn",
+                "content-type: application/json",
+                "user-agent: agentry-php/1.0",
+            ],
             CURLOPT_TIMEOUT => 5,
             CURLOPT_RETURNTRANSFER => true,
         ]);
@@ -1298,6 +1319,9 @@ public class Agentry {
                 .uri(URI.create(URL + "/v1/" + kind + "/" + PROJECT_ID + "/"))
                 .header("authorization", "Bearer " + DSN)
                 .header("content-type", "application/json")
+                // MUST set a custom User-Agent. Cloudflare's Browser Integrity
+                // Check 403s default Java HttpClient UAs with CF error 1010.
+                .header("user-agent", "agentry-java/1.0")
                 .POST(BodyPublishers.ofString(MAPPER.writeValueAsString(payload)))
                 .build();
             CLIENT.sendAsync(req, HttpResponse.BodyHandlers.discarding());
@@ -1356,6 +1380,9 @@ public static class Agentry {
                 Content = JsonContent.Create(payload),
             };
             req.Headers.TryAddWithoutValidation("authorization", $"Bearer {Dsn}");
+            // MUST set a custom User-Agent. Cloudflare's Browser Integrity
+            // Check 403s default .NET HttpClient UAs with CF error 1010.
+            req.Headers.TryAddWithoutValidation("user-agent", "agentry-dotnet/1.0");
             await Client.SendAsync(req);
         } catch { /* never crash the app */ }
     }
@@ -1399,6 +1426,10 @@ pub async fn send(kind: &str, payload: Value) {
     let _ = reqwest::Client::new()
         .post(format!("{url}/v1/{kind}/{pid}/"))
         .bearer_auth(&dsn)
+        // MUST set a custom User-Agent. Cloudflare's Browser Integrity Check
+        // 403s some defaults with CF error 1010. reqwest's UA usually passes,
+        // but setting it explicitly is defensive.
+        .header("user-agent", "agentry-rust/1.0")
         .json(&payload)
         .timeout(std::time::Duration::from_secs(5))
         .send()
@@ -1444,7 +1475,12 @@ defmodule Agentry do
   def send(kind, payload) do
     {kind, payload} = normalize(kind, payload)
     url = "#{@url}/v1/#{kind}/#{project_id()}/"
-    headers = [{"authorization", "Bearer #{@dsn}"}, {"content-type", "application/json"}]
+    # user-agent MUST be set — Cloudflare's BIC 403s defaults with CF error 1010.
+    headers = [
+      {"authorization", "Bearer #{@dsn}"},
+      {"content-type", "application/json"},
+      {"user-agent", "agentry-elixir/1.0"},
+    ]
     body = Jason.encode!(payload)
     Task.start(fn -> :hackney.request(:post, url, headers, body, [recv_timeout: 5_000]) end)
     :ok
@@ -1484,7 +1520,10 @@ export PROJECT_ID="\${PROJECT_ID%%.*}"
 
 # Send to agentry. First arg: errors | analytics | deploys. Second: JSON payload.
 agentry_send() {
+  # -A sets User-Agent. Required: Cloudflare's BIC 403s default curl UAs in
+  # some configurations with CF error 1010. Always set an explicit UA.
   curl -fsS -X POST "$AGENTRY_URL/v1/$1/$PROJECT_ID/" \\
+    -A "agentry-shell/1.0" \\
     -H "authorization: Bearer $AGENTRY_DSN" \\
     -H "content-type: application/json" \\
     -d "$2" >/dev/null 2>&1 || true
@@ -1649,6 +1688,10 @@ function buildHttpGuide(framework: Framework, signalTypes: Set<string>): Install
       "If the project already has Sentry wired up (sentry_sdk / @sentry/node / a custom " +
         "observability wrapper), leave that init untouched. agentry runs side-by-side via its own " +
         "helper; the two don't share a DSN or SDK.",
+      "ALWAYS set an explicit User-Agent header on direct HTTP calls (e.g. `agentry-python/1.0`, " +
+        "`agentry-go/1.0`). Cloudflare's Browser Integrity Check returns 403 (CF error 1010) for " +
+        "common default UAs like `Python-urllib/3.x` and `Java/HttpClient`. The helper above " +
+        "already sets a custom UA — don't remove that line if you refactor the helper.",
       "Don't fail the request if logging fails. The helper has try/catch (or equivalent) — keep it.",
       "Don't log sensitive request bodies. Strip auth tokens and PII before passing to log().",
       "AGENTRY_DSN is ingest-only; safe to deploy as a regular env var (not a high-risk secret).",

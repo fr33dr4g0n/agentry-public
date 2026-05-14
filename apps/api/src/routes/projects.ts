@@ -2,11 +2,10 @@ import { Hono } from "hono";
 import { desc, eq } from "drizzle-orm";
 import {
   CreateProjectRequestSchema,
-  dsnToSentryUrl,
   errors,
   mintDsn,
   uuidv7,
-} from "@agentry/shared";
+} from "@agentrysh/shared";
 import { projects } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey, requireProjectAccess } from "../middleware.js";
@@ -47,31 +46,24 @@ router.post("/", async (c) => {
     createdAt: Math.floor(Date.now() / 1000),
   });
 
-  // URL-form DSN for non-JS callers using existing Sentry SDKs (sentry-python,
-  // sentry-ruby, sentry-go, etc.). The host is derived from the request URL so
-  // the customer points their existing Sentry SDK at this exact deployment.
   const reqUrl = new URL(c.req.url);
-  const sentryDsnUrl = dsnToSentryUrl({
-    dsnRaw: dsn.raw,
-    host: reqUrl.host,
-    protocol: reqUrl.protocol.replace(":", ""),
-  });
-
+  const baseUrl = `${reqUrl.protocol}//${reqUrl.host}`;
   return c.json({
     id: projectId,
     name,
     dsn: dsn.raw,
-    sentry_dsn_url: sentryDsnUrl,
-    ingest_url: `${reqUrl.protocol}//${reqUrl.host}/v1/log/${projectId}/`,
+    logs_url: `${baseUrl}/v1/logs/${projectId}/`,
+    analytics_url: `${baseUrl}/v1/analytics/${projectId}/`,
+    deploys_url: `${baseUrl}/v1/deploys/${projectId}/`,
     install_snippet:
-      "import { agentry } from '@agentry/node'; " +
-      "agentry.init({ dsn: '" +
-      dsn.raw +
-      "', deploySha: process.env.GIT_SHA });",
+      "// Save AGENTRY_DSN to your env. Then any-language fetch:\n" +
+      `// fetch('${baseUrl}/v1/logs/${projectId}/', { method: 'POST', headers: { authorization: 'Bearer ' + process.env.AGENTRY_DSN, 'content-type': 'application/json', 'user-agent': 'agentry-app/1.0' }, body: JSON.stringify(payload) })`,
     next_action:
-      "Save this DSN as AGENTRY_DSN env var in your app. JS apps: call agentry.init(). " +
-      "Other languages: POST any JSON to ingest_url with header 'authorization: Bearer <DSN>'. " +
-      "Existing Sentry SDKs: set SENTRY_DSN to sentry_dsn_url. " +
+      "Save this DSN as AGENTRY_DSN env var in your app. POST logs to logs_url, analytics to analytics_url, deploys to deploys_url — all with header 'authorization: Bearer <DSN>'. " +
+      "ALWAYS set a custom User-Agent header on direct HTTP calls — Cloudflare's Browser Integrity " +
+      "Check returns 403 (CF error 1010) for default urllib/curl UAs. " +
+      "DO NOT pass this DSN to sentry_sdk.init() / @sentry/* — agentry's DSN uses UUID project ids which " +
+      "Sentry SDKs reject (BadDsn). Use the helper from agentry_install_guide instead. " +
       "The DSN won't be shown again — store it now.",
   });
 });

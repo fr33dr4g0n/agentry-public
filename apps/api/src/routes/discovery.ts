@@ -214,7 +214,7 @@ Claude Code session via MCP. The user's own agent investigates and fixes.
 ## Onboarding (≤ 2 prompts of human input)
 
 1. Add the MCP server to Claude Code:
-   claude mcp add agentry -- npx -y @agentry/mcp
+   claude mcp add agentry -- npx -y @agentrysh/mcp
 
 2. In Claude Code, say: "set me up with agentry"
    The agent will run the GitHub device flow, mint an api key, provision your
@@ -223,41 +223,38 @@ Claude Code session via MCP. The user's own agent investigates and fixes.
 
 ## Signal types
 
-agentry is just HTTP. POST any JSON to /v1/log/:project_id/ and we figure out
-what kind of signal it is. Or use the typed endpoints if you prefer:
+agentry is just HTTP. Three first-party endpoints, one DSN, same JSON convention:
 
-- Universal (auto-detects)                      -> POST /v1/log/:project_id/
-- Errors  (Sentry-wire-protocol)                -> POST /v1/store/:project_id/
-- Analytics (forwarded to per-user PostHog)     -> POST /v1/track/:project_id/
-- Deploys (linked to cases via timestamps)      -> POST /v1/deploys/:project_id/
+- Logs      -> POST /v1/logs/:project_id/        (any structured event; errors are a subset)
+- Analytics -> POST /v1/analytics/:project_id/   (forwarded to per-user PostHog)
+- Deploys   -> POST /v1/deploys/:project_id/
 
-All four use the same DSN auth (Bearer or X-Sentry-Auth or ?sentry_key=).
-The /v1/log/ endpoint detects:
-  - 'kind' field if explicitly set
-  - has 'exception' / 'stack' / 'name'+'message'+'stack'  → error
-  - has 'sha' (and not 'event')                            → deploy
-  - has 'event'                                             → analytics
-  - everything else                                         → generic log line
+All three use the same DSN auth (Bearer or X-Sentry-Auth or ?sentry_key=).
+Pick the URL that matches what you're sending. Payloads are open JSON beyond
+the few required fields per type. A log with a name/message/stack gets
+fingerprinted and grouped into a Case — that's what becomes a "bug" in the
+agent's mental model.
 
-## SDKs (optional — agentry is just HTTP)
+### Drop-in aliases for other ecosystems
 
-- @agentry/node      server-side JS (Node 18+, Bun, edge runtimes)
-- @agentry/browser   client-side JS (React/Vue/Svelte/vanilla, Next.js client components)
+- POST /v1/store/:project_id/   → Sentry-wire-protocol alias (point Sentry SDKs here)
+- POST /v1/track/:project_id/   → PostHog-shaped alias for analytics
+- POST /v1/log/:project_id/     → catch-all that auto-detects kind by shape
 
-Both expose: agentry.init(), agentry.capture(), agentry.track(), agentry.log(). The Node
-SDK also exposes agentry.deploy() (deploys are CI/server-side only).
+## No SDK required — agentry is just HTTP
 
-For other languages, agentry's install guide returns a 30-line copy-paste helper using
-the language's stdlib HTTP client — no agentry SDK to install:
+For every supported language, agentry's install guide returns a small copy-paste
+helper using the language's stdlib HTTP client:
 
   agentry_install_guide(framework: "python")  -> requests.post helper for Python
   agentry_install_guide(framework: "ruby")    -> Net::HTTP helper for Ruby
   agentry_install_guide(framework: "go")      -> net/http helper for Go
   agentry_install_guide(framework: "php" | "java" | "dotnet" | "rust" | "elixir" | "curl")
 
-CORS is enabled on /v1/store/*, /v1/track/*, /v1/deploys/* with Access-Control-Allow-Origin: *
-since they're DSN-authenticated. Other endpoints (auth, projects, cases) reject browser
-origins; agentry's MCP server is the only intended client there.
+CORS is enabled on /v1/logs/*, /v1/analytics/*, /v1/deploys/* (and the
+/v1/store/*, /v1/track/*, /v1/log/* aliases) with Access-Control-Allow-Origin: *
+since they're DSN-authenticated. Other endpoints (auth, projects, cases) reject
+browser origins; agentry's MCP server is the only intended client there.
 
 ## Querying / visualization (no dashboard, agent-driven)
 
@@ -298,7 +295,7 @@ Auth (no key required):
 
 Auth (api-key required, header: Authorization: Bearer <agk_…>):
 - POST /v1/auth/keys/rotate                                     mints new key, revokes current
-- POST /v1/projects                                             create project -> {id, dsn, install_snippet}
+- POST /v1/projects                                             create project -> {id, dsn, logs_url, analytics_url, deploys_url, install_snippet}
 - GET  /v1/projects
 - GET  /v1/projects/:id
 - GET  /v1/projects/:id/cases?status=open
@@ -336,7 +333,7 @@ router.get("/", (c) => {
     version: "0.0.0",
     docs: "/llms.txt",
     next_action:
-      "Read /llms.txt for capabilities. Install the MCP via `claude mcp add agentry -- npx -y @agentry/mcp`.",
+      "Read /llms.txt for capabilities. Install the MCP via `claude mcp add agentry -- npx -y @agentrysh/mcp`.",
   });
 });
 
