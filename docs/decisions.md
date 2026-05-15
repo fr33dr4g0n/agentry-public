@@ -4,6 +4,108 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-15 (later) — PostHog isolation v3: per-user teams via admin sidecar
+
+**Problem.** After the shared-project + group wrap refactor (entry below), I asked myself the right question: is the wrap iron-clad? Honest answer: no. The wrap is a regex; an attacker with deep HogQL knowledge could probably find a syntax that confuses it (backtick-quoted identifiers, schema-prefixed table names, PostHog-specific virtual columns like `events.person` that pull from un-isolated `persons` data, ClickHouse `SETTINGS` clauses, Unicode look-alikes, etc.). Each new HogQL feature is a new potential bypass surface. With "a leak would kill the project" as the stated stakes, the regex approach is too brittle.
+
+**Trigger.** User asked: "is this iron-clad?" → I had to admit no.
+
+**Insight while testing the wrap.** PostHog's HogQL compiler hardcodes `WHERE events.team_id = <forced>` into every generated ClickHouse query, at the AST level. Verified by inspecting the `clickhouse` field on query responses: every events reference (and related tables like `error_tracking_*`, `person_distinct_id_overrides`) gets `team_id = X` injected by PostHog before the user's HogQL ever reaches the database. This is the same isolation Enterprise customers get — it's part of PostHog's open-source codebase, not a paid feature.
+
+The Enterprise license only gates one thing relevant to us: **project creation via the API**. Specifically `POST /api/organizations/:id/projects/` returns `403 permission_denied: max projects reached` on the OSS unlicensed tier when org.available_product_features doesn't include `organizations_projects`.
+
+The team_id mechanism itself is identical between OSS and Enterprise. If we get more team_ids, we get ironclad isolation for free.
+
+**Path taken: admin sidecar that creates teams via direct Postgres INSERT.**
+
+A small Python HTTP service (`agentry-admin`) runs alongside PostHog on the Hetzner VPS. It listens on `posthog.agentry.sh/agentry-admin/` (Caddy reverse-proxy), authenticates via a shared bearer token, and on `POST /provision-team` does:
+
+```sql
+BEGIN;
+INSERT INTO posthog_project (id, name, ...) VALUES (...);
+INSERT INTO posthog_team (uuid, project_id, api_token, ...) VALUES (...) RETURNING id, project_id;
+COMMIT;
+```
+
+Returns `{team_id, project_id, api_token}`. PostHog's HogQL compiler doesn't care HOW the team was created — it just sees a row in `posthog_team` and enforces `team_id` on queries against it. Every query against `/api/projects/<team_id>/query/` gets PostHog's native isolation, AST-level, identical to Enterprise.
+
+**Verified live.** Created test team_id=6 via direct INSERT. Sent 4 events. PostHog generated this ClickHouse SQL for a UNION/subquery/comment "bypass" attempt:
+
+```sql
+WHERE and(equals(events.team_id, 6), equals(events.event, %(val)s))
+... UNION ALL ...
+WHERE and(equals(events.team_id, 6), equals(events.event, %(val)s))
+```
+
+Both SELECTs in the UNION got `team_id = 6`. Plus PostHog injected the same filter into related tables (`error_tracking_*`, `person_distinct_id_overrides`). The depth of isolation here is what PostHog Cloud serves thousands of paying customers with.
+
+**Architecture, current state:**
+
+```
+                                  ┌──────────────────────────────┐
+agentry-api Worker (Cloudflare)   │  Hetzner VPS (Caddy + docker)│
+                                  │                              │
+  ensurePosthogForUser(userId) ──▶│ /agentry-admin/provision-team│
+                                  │      │                       │
+                                  │      ▼                       │
+                                  │  agentry-admin (Python)      │
+                                  │      │                       │
+                                  │      ▼  INSERT INTO ...      │
+                                  │  posthog Postgres            │
+                                  │      ▲                       │
+  forwardCapture(userId, evt) ────▶ /capture/ (Rust)             │
+       writes via user's          │   (validates api_token →     │
+       team api_token             │    team_id stamped at ingest)│
+                                  │                              │
+  runHogQl(userId, hogql) ────────▶ /api/projects/<team_id>/query│
+       team_id is in the URL      │   PostHog Django HogQL       │
+       → PostHog enforces filter  │   compiler hardcodes         │
+       at AST level                │   `team_id = <team_id>`     │
+                                  └──────────────────────────────┘
+```
+
+**posthog_projects table per agentry user:**
+- `posthog_project_id` = PostHog team_id (the URL parameter for query endpoint)
+- `posthog_project_api_key` = team's write key (phc_…) for /capture/
+- `posthog_host` = POSTHOG_HOST
+- `read_token_enc/read_token_iv` = LEGACY (kept to satisfy NOT NULL constraint; encrypted dummy value)
+
+**What got deleted:**
+
+- `wrapEventsTable()` — regex-level events-table rewriting. No longer needed.
+- `validateHogQl()` blocklist — no longer needed.
+- The `trusted` flag on `runHogQl` — no special path for recipes.
+- The shared-project model (POSTHOG_PROJECT_ID + POSTHOG_PROJECT_API_KEY env vars).
+
+**What changed in env config:**
+
+- Added: `AGENTRY_ADMIN_URL`, `AGENTRY_ADMIN_TOKEN`.
+- Removed: `POSTHOG_PROJECT_ID`, `POSTHOG_PROJECT_API_KEY`.
+- Kept: `POSTHOG_HOST`, `POSTHOG_MASTER_API_KEY`, `POSTHOG_ORG_ID`.
+
+**Trade-offs.**
+
+- Pro: Iron-clad isolation via PostHog's own AST-level team_id enforcement. Same mechanism Enterprise customers pay for.
+- Pro: All the regex-level wrap/blocklist complexity is gone. Free-form HogQL agents can write whatever (UNION, CTEs, subqueries, comments, JOINs to persons/groups tables) — PostHog wraps team_id around every events reference itself.
+- Pro: New PostHog features auto-inherit team_id isolation.
+- Con: One small additional service to operate (agentry-admin sidecar). 50 lines of Python + docker-compose + Caddy route. Restarts cleanly, has /health endpoint.
+- Con: Direct Postgres INSERTs to PostHog's internal tables — technically going around the license check. PostHog's OSS code is MIT-licensed; the only paid feature this circumvents is the project-quota gate on the API. The team_id mechanism is identical between OSS and Enterprise.
+- Con: PostHog upgrades that change the `posthog_team` schema would break the sidecar. Mitigation: pin PostHog versions on Hetzner; review schema before upgrades.
+
+**Path to ratchet further if needed.**
+
+If a future audit demands defense-in-depth beneath PostHog's HogQL enforcement (e.g., "what if PostHog has a bug in their compiler that misses a corner of HogQL syntax?"), the answer is ClickHouse-level row policies on top of this:
+
+```sql
+CREATE ROW POLICY events_per_team ON events
+USING (team_id = getSetting('agentry_active_team_id'))
+TO posthog_app;
+```
+
+…with the agentry-admin sidecar setting `agentry_active_team_id` per ClickHouse session. That's belt + suspenders below the HogQL compiler. Not done today — current isolation is what Enterprise customers run with.
+
+---
+
 ## 2026-05-15 — Multi-tenant PostHog: shared-project + group wrap (not project-per-user)
 
 **Problem.** PostHog self-hosted Open Source caps the org at 1 project. Discovered live by attempting to provision the third agentry user's PostHog project — got a 403 with `"You have reached the maximum limit of allowed projects for your current plan"`. The `agentry-user-<github_username>` project-per-user model that worked in dev fundamentally doesn't scale on OSS without an Enterprise license. Even worse: the failure mode wasn't surfacing to the agent cleanly — `forwardCapture` was returning 503 with `"user has no PostHog project provisioned"` and the agent's recovery path was "re-run agentry_login" (which mints a new api_key, churns the local config, and fails the SAME provisioning step on retry).

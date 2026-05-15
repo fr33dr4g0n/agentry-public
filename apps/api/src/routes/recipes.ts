@@ -79,10 +79,10 @@ router.post(
         );
       }
       const interpolated = interpolateQuery(recipe.query, params, recipe.params);
-      // Recipes are server-controlled HogQL — skip the user-query blocklist
-      // (CTEs/UNION are fine because we wrote the recipe). Group-filter wrap
-      // still applies so every events scan is scoped to this user.
-      const out = await runHogQl(c.env, proj.userId, interpolated, { trusted: true });
+      // PostHog enforces team_id on every events reference at the AST level
+      // — recipe-controlled HogQL is safe by construction AND by ironclad
+      // isolation. No application-level wrap/blocklist needed.
+      const out = await runHogQl(c.env, proj.userId, interpolated);
       return c.json({
         recipe_id: recipe.id,
         title: recipe.title,

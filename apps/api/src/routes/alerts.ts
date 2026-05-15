@@ -145,9 +145,8 @@ router.post(
         throw errors.internal("Analytics-backed alerts need PostHog configured.");
       }
       const interpolated = interpolateQuery(recipe.query, params, recipe.params);
-      // Alerts run server-controlled recipes — skip the user-query blocklist.
-      // Group-filter wrap still scopes events scans to this user.
-      const out = await runHogQl(c.env, proj.userId, interpolated, { trusted: true });
+      // PostHog's per-team_id AST enforcement makes alerts inherently scoped.
+      const out = await runHogQl(c.env, proj.userId, interpolated);
       const cols = out.columns ?? recipe.expected_columns;
       rowsOut = (out.results ?? []).map((r) => {
         if (Array.isArray(r)) {

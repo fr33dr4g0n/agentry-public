@@ -35,9 +35,10 @@ crons = ["10 1 * * *"]
 #   GITHUB_CLIENT_ID
 #   GITHUB_CLIENT_SECRET
 #   POSTHOG_HOST                 e.g. https://posthog.agentry.sh
-#   POSTHOG_PROJECT_ID           shared project id (PostHog "Default project" = 1)
-#   POSTHOG_PROJECT_API_KEY      shared project write key (phc_…) for /capture/
 #   POSTHOG_MASTER_API_KEY       Personal API key (phx_…) for HogQL queries
+#   POSTHOG_ORG_ID               org uuid the admin sidecar provisions under
+#   AGENTRY_ADMIN_URL            e.g. https://posthog.agentry.sh/agentry-admin
+#   AGENTRY_ADMIN_TOKEN          Bearer for the admin sidecar
 #   AGENTRY_TOKEN_ENC_KEY        32-byte AES-256 key (used by webhooks.ts)
 #   AGENTRY_TOKEN_ENC_KEY      (encrypts webhook signing secrets at rest)
 #   POSTHOG_HOST               (after PostHog is up)
