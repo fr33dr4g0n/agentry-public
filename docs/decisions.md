@@ -4,6 +4,80 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-15 — Multi-tenant PostHog: shared-project + group wrap (not project-per-user)
+
+**Problem.** PostHog self-hosted Open Source caps the org at 1 project. Discovered live by attempting to provision the third agentry user's PostHog project — got a 403 with `"You have reached the maximum limit of allowed projects for your current plan"`. The `agentry-user-<github_username>` project-per-user model that worked in dev fundamentally doesn't scale on OSS without an Enterprise license. Even worse: the failure mode wasn't surfacing to the agent cleanly — `forwardCapture` was returning 503 with `"user has no PostHog project provisioned"` and the agent's recovery path was "re-run agentry_login" (which mints a new api_key, churns the local config, and fails the SAME provisioning step on retry).
+
+**Two independent issues stacked:**
+
+1. **Architectural**: project-per-user collapses at PostHog OSS's 1-project cap.
+2. **Operational**: the PostHog Rust `capture` service on the Hetzner VPS had exited 2 days prior (transient `kafka:9092` DNS failure → kafka-sink health check stalled → clean shutdown, no auto-restart). All `/capture/` endpoints returned Caddy 502. SSH'd in, restarted via `docker start henrikh-capture-1 henrikh-replay-capture-1` — both reconnected to Kafka. Documented for ops separately.
+
+The architectural piece is the real decision below.
+
+**Options considered.**
+
+- **Option E — PostHog Enterprise license + revert to project-per-user.** PostHog's native multi-tenancy is `team_id`. Their HogQL compiler hardcodes `WHERE events.team_id = X` into every generated ClickHouse query — bulletproof at the SQL layer, no application-level filter dance. Cost: Enterprise self-hosted is paid (~$$ four-figure-monthly last we checked). The "right" answer if budget allows.
+
+- **Option F — ClickHouse Row Policy.** ClickHouse supports `CREATE ROW POLICY ON events USING (...)` — applied below the SQL layer, can't be bypassed by query shape. *Conceptually* the gold standard. Operationally hard with PostHog: PostHog queries ClickHouse as a single service-account user, so row policies need either (a) per-user ClickHouse credentials (back to the provisioning problem), (b) session-variable-driven policies the Worker sets per query (PostHog's query API doesn't cleanly forward arbitrary CH settings), (c) a sidecar between agentry-api and PostHog that injects the session settings, or (d) forking PostHog's query compiler. Real engineering days; doable, but heavy.
+
+- **Option A — Application-layer query rewriting.** All agentry users share one PostHog project; users are PostHog `groups` (`group_type='agentry_user'`, `group_key=<agentry user uuid>`). Events carry `$groups: {agentry_user: <userId>}` on capture; queries are rewritten by the Worker to scope each `events` scan to the user's group. Cheap to implement, no PostHog license, no ops surface — but the rewriting has to be airtight or it leaks across users.
+
+**Decision.** Option A, hardened. Shipped in `f7923ee`, `7df7a68`, `af9d5a4`. The plan if/when commercial traction justifies it: graduate to Option E for ironclad isolation.
+
+**The implementation, in order:**
+
+**Phase 1 (`f7923ee`)** — refactor to shared-project model. New env: `POSTHOG_PROJECT_ID=1` (PostHog Default project), `POSTHOG_PROJECT_API_KEY` (the project's write key). `forwardCapture` injects `$groups: {agentry_user: userId}` on every event. `runHogQl` uses PostHog's `/api/projects/:id/query/` `filters.properties` block to inject a group filter, expecting PostHog to apply it server-side. `ensurePosthogForUser` becomes near-no-op + fires `$groupidentify` so the user shows up in PostHog's groups UI with a friendly name.
+
+**Phase 2 (`7df7a68`)** — discovered the `filters.properties` block is silently dropped. Inspected the generated ClickHouse SQL in PostHog's query response: filter was nowhere in the WHERE clause. PostHog only honors `filters` when the HogQL explicitly references a `{filters}` template token. Switched to direct WHERE injection via string manipulation: find the top-level `WHERE`, inject `(properties.$group_0 = '<uid>') AND ` right after the keyword. UUID-validated at function entry — embedding it as a SQL literal is injection-safe.
+
+**Phase 3 (`af9d5a4`)** — discovered the outer-WHERE injection had multiple bypasses. Demonstrated live:
+
+1. *SQL line comment before WHERE.* `SELECT count() FROM events -- WHERE event='trickme'\nWHERE event='X'` — my regex found the WHERE inside the comment and injected the filter there. The actual WHERE on the next line was unfiltered. Total cross-user count returned.
+2. *UNION ALL.* `SELECT … FROM events WHERE … UNION ALL SELECT … FROM events WHERE …` — only the first SELECT got the filter. Second SELECT exposed all users' events.
+3. *Subquery / CTE.* Inner `FROM events` references inside subqueries or `WITH` clauses scanned cross-user data; the outer filter operated on the already-materialised subquery rows. Server-controlled recipes (which use CTEs heavily) were ALSO leaking because the same outer-only injection logic applied.
+
+Rebuilt as a per-table-reference wrap:
+
+```sql
+FROM events           →   FROM (SELECT * FROM events WHERE properties.$group_0 = '<uid>')
+FROM events e         →   FROM (SELECT * FROM events WHERE …) e
+JOIN events AS e      →   JOIN (SELECT * FROM events WHERE …) AS e
+```
+
+Each `events` scan is independently scoped — UNION, CTEs, multi-FROM-events subqueries, JOINs all safely contained because the wrapping happens at the table-reference layer, not the outer query. Unified path for user queries AND recipes (`runHogQl` takes `opts: { trusted?: boolean }`; recipes pass `trusted: true` to skip the blocklist, but the wrap still applies).
+
+The blocklist for *user-supplied* HogQL got narrower (the wrap handles more shapes):
+- Block: SQL comments (`--`, `/* */`) — could confuse the regex.
+- Block: any `FROM`/`JOIN` against a table other than `events` — PostHog's persons, groups, sessions, session_replay_events tables aren't isolated per agentry user, so referencing them is out.
+- Allow: UNION, CTEs, subqueries (wrap handles all of them).
+
+**Verified live against the running PostHog deployment:**
+- UNION ALL with two SELECTs against `events`, both wrapped: returns `[[2], [2]]` for user A (whose count is 2). No leak from the second SELECT.
+- CTE + JOIN to subquery on events, all wraps applied: returns 2 (user A's count). Inner CTE doesn't see other users.
+- Cross-user spot-check: A → 2, B → 1, bogus UUID → 0.
+
+**Known limitations.**
+- String literals containing the substring `"FROM events"` get rewritten inside the literal. No security impact (the rewritten literal is just nonsensical and won't match anything), but the query may fail to match what the user intended. Edge case; agents don't typically search event names for the string `"FROM events"`.
+- Regex-level table-reference matching can't handle every adversarial whitespace/casing edge case a determined attacker might craft. Untested attack surface exists. For a hostile multi-tenant SaaS context, this is *not* sufficient — graduate to Option E or F.
+- The blocklist's "only events table" rule means cohort/funnel queries needing PostHog's `persons` or `groups` tables must go through recipes (server-controlled HogQL). Agents lose some ad-hoc flexibility there.
+
+**When to graduate.**
+- If agentry hosts data for users who don't trust each other → Option E (Enterprise + project-per-user) is the right move. PostHog's `team_id` enforcement is below the SQL layer; no regex maintenance.
+- If you want both flexibility (free-form HogQL) AND iron-clad isolation without paying PostHog → Option F (ClickHouse row policy via session settings, plus a sidecar to forward them through PostHog).
+
+**Why the wrap-approach lives in `apps/api/src/posthog.ts`, not as a more elegant AST rewrite.**
+No JS HogQL parser exists. PostHog's parser is Python. Running it would mean spawning a process (no good in Cloudflare Workers) or porting it. The wrap is a pragmatic 4-line string regex. We tested every shape we could think of; it holds. If a future bypass is found, the response is patch + audit, not redesign.
+
+**Capture-service outage postmortem (separate from the architectural decision but logged here for completeness).**
+- 2026-05-13 17:15 UTC: docker network DNS resolved `kafka:9092` failed for ~25 s on the Hetzner box.
+- PostHog Rust `capture` container's kafka-sink lifecycle monitor reported "health check stalled" → clean shutdown (exit code 0, OOMKilled false). No `restart: unless-stopped` policy attached.
+- For 48 h: `/_health` returned 200 (Django/NGINX-Unit container still running), `/capture/` returned Caddy 502 (no upstream). Ingest 100 % dropped.
+- 2026-05-15 08:37 UTC: SSH'd in, `docker start henrikh-capture-1 henrikh-replay-capture-1`. Both reconnected to Kafka in <1 s. Verified end-to-end.
+- Follow-up: add `restart: unless-stopped` to the capture/replay-capture containers in the docker-compose so a transient DNS blip doesn't take ingest down for two days again. (Not done in this session — tracked separately.)
+
+---
+
 ## 2026-05-13 — Data plane vs. compute plane: API stores, MCP transforms
 
 **Problem.** As we add features (sourcemap unmangling, fingerprinting, formatting…) there's a fork in the road for every one: does the transformation run server-side (worker has the code) or agent-side (MCP runs it locally)? Without a rule, the codebase drifts toward "convenient on the server" — which means opaque blobs of compute the user can't review. That contradicts the agent-first wedge: the whole pitch is that the agent IS the SDK, not a vendor.
