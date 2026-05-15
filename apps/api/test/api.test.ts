@@ -77,10 +77,22 @@ describe("discovery", () => {
     expect(res.status).toBe(200);
     const json = (await res.json()) as { name: string; docs: string };
     expect(json.name).toBe("agentry");
-    expect(json.docs).toBe("/llms.txt");
+    expect(json.docs).toBe("/agentry.md");
   });
 
-  it("GET /llms.txt returns text/plain", async () => {
+  it("GET /agentry.md returns text/markdown with the canonical doc", async () => {
+    const res = await call("/agentry.md");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type") ?? "").toContain("text/markdown");
+    const txt = await res.text();
+    expect(txt).toContain("agentry");
+    expect(txt).toContain("MCP");
+    // Spot-check the no-magic section + the API surface block exist.
+    expect(txt).toContain("data plane");
+    expect(txt).toContain("compute plane");
+  });
+
+  it("GET /llms.txt still serves the same doc as a back-compat alias", async () => {
     const res = await call("/llms.txt");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type") ?? "").toContain("text/plain");
