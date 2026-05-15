@@ -8,10 +8,10 @@
 
 import { Hono } from "hono";
 import { and, eq } from "drizzle-orm";
-import { errors, uuidv7 } from "@agentry/shared";
+import { errors, uuidv7 } from "@agentrysh/shared";
 import { alerts, webhooks } from "@agentry/db/schema";
 import { getDb } from "../db.js";
-import { requireApiKey, requireProjectAccess } from "../middleware.js";
+import { requireApiKey, requireProjectAccess, waitUntilOf } from "../middleware.js";
 import { fireWebhooks } from "../webhooks.js";
 import { getRecipe, interpolateQuery } from "../recipes.js";
 import { isPosthogConfigured, runHogQl } from "../posthog.js";
@@ -145,7 +145,9 @@ router.post(
         throw errors.internal("Analytics-backed alerts need PostHog configured.");
       }
       const interpolated = interpolateQuery(recipe.query, params, recipe.params);
-      const out = await runHogQl(c.env, proj.userId, interpolated);
+      // Alerts run server-controlled recipes — skip the user-query blocklist.
+      // Group-filter wrap still scopes events scans to this user.
+      const out = await runHogQl(c.env, proj.userId, interpolated, { trusted: true });
       const cols = out.columns ?? recipe.expected_columns;
       rowsOut = (out.results ?? []).map((r) => {
         if (Array.isArray(r)) {
@@ -178,8 +180,7 @@ router.post(
 
     let fired = false;
     if (triggered) {
-      const waitUntil = (p: Promise<unknown>) =>
-        c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
+      const waitUntil = waitUntilOf(c);
       // alert.fired isn't in the canonical webhook events list — fire to all
       // active webhooks (or just the linked one) using a custom event name.
       // We can't extend WebhookEvent without changing the typed list, so we

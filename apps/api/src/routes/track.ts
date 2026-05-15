@@ -218,6 +218,7 @@ router.get(
           "SELECT event, count() AS c, max(timestamp) AS last_seen " +
             "FROM events WHERE timestamp > now() - INTERVAL 30 DAY " +
             "GROUP BY event ORDER BY c DESC LIMIT 200",
+          { trusted: true },
         );
         analytics = (out.results ?? []).map((row) => {
           const r = row as unknown[];

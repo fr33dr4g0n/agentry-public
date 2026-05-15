@@ -43,50 +43,124 @@ const PROVISION_TIMEOUT_MS = 10_000;
 // events would orphan.
 const AGENTRY_USER_GROUP_TYPE = "agentry_user";
 
-// Inject a per-user WHERE clause into user-supplied HogQL so cross-user
-// isolation is enforced server-side regardless of what the user query says.
-// Caller MUST validate userId is a UUID before calling — we re-check inline
-// as a defensive belt-and-suspenders.
+// HogQL the agent can't write. Rejecting these closes the demonstrated
+// bypasses of injectGroupFilter (SQL comments, UNION, CTEs, multi-table-ref
+// subqueries, and references to PostHog tables we don't filter).
 //
-// Algorithm:
-//   - If the query has a top-level WHERE, inject `(filter) AND ` right after
-//     the WHERE keyword.
-//   - If not, insert `WHERE filter` before the first of GROUP BY / ORDER BY /
-//     HAVING / LIMIT / end-of-query.
+// This is a BLOCKLIST not a parser — string-level. It's defense-in-depth on
+// top of the WHERE-clause injection. The real long-term fix is either (a) a
+// PostHog Enterprise license + PostHog-native team_id isolation per agentry
+// user, or (b) a sidecar that injects ClickHouse session settings to drive
+// row policies. See docs/decisions.md.
+//
+// What's allowed: SELECT … FROM events [WHERE …] [GROUP BY …] [ORDER BY …]
+//                 [LIMIT …] [HAVING …] — single SELECT, single FROM events
+//                 reference, no comments, no other tables.
+//
+// What's rejected: anything that could let an attacker scan unfiltered data.
+// Blocklist for user-supplied (untrusted) HogQL. The wrap technique handles
+// UNION / CTEs / subqueries, so we only need to forbid patterns that could
+// confuse the wrap regex or access unfiltered tables.
+//
+// Recipes (server-controlled HogQL, `trusted: true`) skip this entirely —
+// they're safe by construction, and the wrap still applies to their events
+// references for the same isolation guarantee.
+const HOGQL_BLOCKLIST: Array<{ name: string; matcher: RegExp; reason: string }> = [
+  // SQL comments — could shift our regex matches in unexpected ways.
+  // Easier to ban than to parse around.
+  { name: "line comment", matcher: /--/, reason: "SQL line comments (`--`) are not allowed in user-supplied HogQL. Remove the comment and retry." },
+  { name: "block comment", matcher: /\/\*|\*\//, reason: "SQL block comments (`/* */`) are not allowed in user-supplied HogQL." },
+  // Only `events` is queryable from untrusted HogQL. Other PostHog tables
+  // (persons, groups, sessions, session_replay_events, cohort_people,
+  // system.*, etc.) aren't isolated per agentry user.
+  //
+  // The wrap turns every `FROM events` / `JOIN events` into a subquery, so
+  // after wrap, the query contains `FROM (SELECT * FROM events WHERE …)`.
+  // We must allow `FROM (` (subqueries) and `JOIN (`, but reject `FROM <other_table>`.
+  // We validate BEFORE wrap, so the user query at this point only has bare
+  // table references — making "no non-events table" easy to check.
+  {
+    name: "non-events FROM/JOIN",
+    matcher: /\b(?:FROM|JOIN)\s+(?!events\b)(?!\()(?!\s*\(\s*SELECT\b)[A-Za-z_][\w.]*/i,
+    reason:
+      "Only the `events` table is queryable. References to persons, groups, sessions, " +
+      "session_replay_events, cohort_people, system.*, etc. are blocked because they're " +
+      "not currently scoped per agentry user. Use a recipe (agentry_list_recipes) for queries " +
+      "that need those — recipes use server-controlled HogQL that's safely written.",
+  },
+];
+
+function validateHogQl(hogql: string): void {
+  for (const rule of HOGQL_BLOCKLIST) {
+    if (rule.matcher.test(hogql)) {
+      throw errors.invalidPayload({
+        reason: rule.reason,
+        rejected_pattern: rule.name,
+      });
+    }
+  }
+  // Must reference events at least once — pure utility queries like
+  // `SELECT now()` don't make sense in this API.
+  if (!/\bFROM\s+events\b/i.test(hogql)) {
+    throw errors.invalidPayload({
+      reason:
+        "HogQL queries must include `FROM events`. Other PostHog tables (persons, groups, " +
+        "sessions) aren't isolated per agentry user. Use a recipe (agentry_list_recipes) if " +
+        "you need to join those.",
+      rejected_pattern: "no FROM events",
+    });
+  }
+}
+
+// Wrap every `FROM events` (and `JOIN events`) reference in user-supplied
+// HogQL with a per-user-filtered subquery, so cross-user isolation is
+// enforced at the table-reference layer — not the outer WHERE clause.
+//
+// Why this shape: PostHog's `filters.properties` block in the query API is
+// silently dropped (proven by inspecting generated ClickHouse SQL). Outer-
+// WHERE injection works for SELECT…FROM events but breaks on UNION,
+// subqueries, CTEs, and other multi-SELECT shapes. Wrapping every events
+// reference is the only injection-style approach that handles them.
+//
+// Each `events` → `(SELECT * FROM events WHERE properties.$group_0 = '<uid>')`
+// substitution preserves the alias, if any.
+//
+// The userId is a v7 UUID validated by injectGroupFilter's caller (and re-
+// checked here). Embedding it as a SQL literal is injection-safe.
 //
 // Limitations:
-//   - We only handle top-level WHERE. A user query like
-//     `SELECT * FROM (SELECT ... WHERE x = 1) AS t` would inject into the
-//     outer query (no top-level WHERE found → adds WHERE at the end). Since
-//     PostHog's HogQL doesn't expose cross-team data via subqueries, the
-//     filter still constrains the outer scan.
-//   - String literals containing the word "where" can theoretically confuse
-//     the regex. We use word-boundary matching to make this very unlikely.
-function injectGroupFilter(hogql: string, userId: string): string {
+//   - Inline string literals containing "FROM events" would be rewritten.
+//     We accept this — agents almost never put SQL keywords in event names.
+//   - `events_*` table variants (PostHog has none of these as user-queryable
+//     today) would NOT be rewritten. The blocklist disallows referencing
+//     anything other than `events` in untrusted queries, closing this gap.
+function wrapEventsTable(hogql: string, userId: string): string {
   if (!/^[0-9a-f-]{36}$/i.test(userId)) {
-    throw new Error("injectGroupFilter requires a UUID userId");
+    throw new Error("wrapEventsTable requires a UUID userId");
   }
-  const filter = `properties.$group_0 = '${userId}'`;
-  // Case-insensitive search for keyword boundaries. Whitespace on both sides
-  // (or start/end of string) so we don't match column names containing the keyword.
-  const findKeyword = (kw: string): number => {
-    const re = new RegExp(`\\b${kw}\\b`, "i");
-    const m = re.exec(hogql);
-    return m ? m.index : -1;
-  };
-  const whereIdx = findKeyword("WHERE");
-  if (whereIdx !== -1) {
-    const after = whereIdx + "WHERE".length;
-    return `${hogql.slice(0, after)} (${filter}) AND${hogql.slice(after)}`;
-  }
-  // No WHERE — find where to inject one.
-  const tails = ["GROUP BY", "ORDER BY", "HAVING", "LIMIT"];
-  let cutAt = hogql.length;
-  for (const kw of tails) {
-    const idx = findKeyword(kw);
-    if (idx !== -1 && idx < cutAt) cutAt = idx;
-  }
-  return `${hogql.slice(0, cutAt).trimEnd()} WHERE ${filter} ${hogql.slice(cutAt)}`.trimEnd();
+  const filtered = `(SELECT * FROM events WHERE properties.$group_0 = '${userId}')`;
+  // Match `FROM events` or `JOIN events` (case-insensitive), with optional
+  // alias following (single word, optionally preceded by AS). Replace with
+  // the filtered subquery; preserve the alias on the wrapped subquery.
+  // Skip the rewrite if we're already inside a filtered subquery (i.e. the
+  // events ref is the one we just wrote). We detect this by ensuring the
+  // preceding char isn't a `(` (which would mean we're recursing). Simple
+  // approach: do a single pass with a non-greedy regex.
+  //
+  // Pattern explanation:
+  //   \b(FROM|JOIN)\s+events\b — the keyword + table name on a word boundary
+  //   (?!\s*WHERE\s+properties\.\$group_0\s*=\s*'[0-9a-f-]{36}')
+  //                          negative lookahead — don't rewrite events refs
+  //                          that are already inside our wrapped subquery
+  //                          (won't happen with a single pass, but be safe)
+  //   (\s+(?:AS\s+)?(\w+))?  optional alias capture
+  return hogql.replace(
+    /\b(FROM|JOIN)\s+events\b(\s+(?:AS\s+)?(\w+))?/gi,
+    (_match, keyword, aliasGroup, _aliasName) => {
+      const alias = aliasGroup ? aliasGroup : "";
+      return `${keyword} ${filtered}${alias}`;
+    },
+  );
 }
 
 export function isPosthogConfigured(env: Env): boolean {
@@ -417,10 +491,18 @@ export async function forwardCapture(
 // HogQL passthrough — server-side group filter ensures cross-user isolation.
 // ---------------------------------------------------------------------------
 
+export interface RunHogQlOpts {
+  /** If true, skip the user-supplied-HogQL blocklist (recipes/server-controlled
+   *  queries only — they're already safe by construction). Group-filter
+   *  injection STILL applies regardless. */
+  trusted?: boolean;
+}
+
 export async function runHogQl(
   env: Env,
   userId: string,
   query: string,
+  opts: RunHogQlOpts = {},
 ): Promise<{ results: unknown[]; columns: string[] | null; types: string[] | null }> {
   if (!isPosthogConfigured(env)) throw errors.internal("posthog not configured");
   const ph = getSharedPosthog(env);
@@ -441,7 +523,14 @@ export async function runHogQl(
       `Refusing to run HogQL: userId is not a UUID. Got: ${userId.slice(0, 20)}…`,
     );
   }
-  const filteredQuery = injectGroupFilter(query, userId);
+  // Defense-in-depth: reject user-supplied queries with constructs we don't
+  // want to deal with (comments, references to non-events tables). Recipes
+  // skip validation — they're safe by construction.
+  if (!opts.trusted) validateHogQl(query);
+  // Group-filter wrap applies to BOTH paths: every `FROM events` reference
+  // becomes a per-user-filtered subquery. UNION, CTEs, subqueries — all safe
+  // because each events scan is independently scoped.
+  const filteredQuery = wrapEventsTable(query, userId);
 
   const url = `${ph.host}/api/projects/${ph.projectId}/query/`;
   const reqBody = {

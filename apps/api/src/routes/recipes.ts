@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { eq, sql } from "drizzle-orm";
-import { errors } from "@agentry/shared";
+import { errors } from "@agentrysh/shared";
 import { cases, deploys, events } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey, requireProjectAccess } from "../middleware.js";
@@ -79,7 +79,10 @@ router.post(
         );
       }
       const interpolated = interpolateQuery(recipe.query, params, recipe.params);
-      const out = await runHogQl(c.env, proj.userId, interpolated);
+      // Recipes are server-controlled HogQL — skip the user-query blocklist
+      // (CTEs/UNION are fine because we wrote the recipe). Group-filter wrap
+      // still applies so every events scan is scoped to this user.
+      const out = await runHogQl(c.env, proj.userId, interpolated, { trusted: true });
       return c.json({
         recipe_id: recipe.id,
         title: recipe.title,
