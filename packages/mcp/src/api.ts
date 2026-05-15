@@ -110,12 +110,12 @@ export async function apiFetch<T>(
   const url = opts.absoluteUrl ?? `${cfg.server_url.replace(/\/$/, "")}${pathOrUrl}`;
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "user-agent": "agentry-mcp/0.0.7",
+    "user-agent": "agentry-mcp/0.0.8",
   };
   if (!opts.skipAuth) {
     if (opts.dsnAuth) {
       headers["x-sentry-auth"] =
-        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.7`;
+        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.8`;
     } else if (cfg.api_key) {
       headers["authorization"] = `Bearer ${cfg.api_key}`;
     }
@@ -286,7 +286,7 @@ export const api = {
       headers: {
         authorization: `Bearer ${publicKey}`,
         "content-type": "application/json",
-        "user-agent": "agentry-mcp/0.0.7",
+        "user-agent": "agentry-mcp/0.0.8",
       },
       body: opts.body,
     });

@@ -38,11 +38,21 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
   {
     name: "agentry_login",
     description:
-      "Authenticate the user via GitHub device flow. " +
-      "Starts the flow, shows the user a verification URL and a short code, then polls until they authorize. " +
-      "Returns an API key and stores it locally. " +
-      "By default the tool blocks until success or timeout; " +
-      "use `mode: 'start_only'` to return the verification details without polling, or `mode: 'poll_once'` with `device_code` to do a single non-blocking poll.",
+      "Authenticate the user via GitHub device flow. Returns an API key, stored locally. " +
+      "" +
+      "RECOMMENDED two-call sequence for interactive sessions: " +
+      "  1. Call with mode='start_only' → returns user_code + verification_uri + device_code. " +
+      "     Show the user the code and URL (DO NOT ask them to confirm authorization — they'll " +
+      "     just open the URL, paste the code, and you'll poll). " +
+      "  2. IMMEDIATELY call again with mode='full' + the device_code from step 1. " +
+      "     This blocks and auto-polls every ~5s for up to timeout_seconds (default 180). " +
+      "     Returns the api_key when the user authorizes, or status='expired'/'denied' on failure. " +
+      "" +
+      "DO NOT ask the user 'tell me once you've authorized'. The second call handles the wait. " +
+      "" +
+      "Single-call shortcut: call with mode='full' and no device_code — the tool starts the flow " +
+      "AND polls in one shot, but the user can't see the code until the call returns. Only use " +
+      "this when there's no interactive user (e.g. you've already shown the code another way).",
     inputSchema: {
       type: "object",
       properties: {
@@ -50,13 +60,18 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
           type: "string",
           enum: ["full", "start_only", "poll_once"],
           description:
-            "'full' (default) starts and polls until done. " +
-            "'start_only' returns the verification URL + code + device_code immediately. " +
-            "'poll_once' takes device_code and does a single poll.",
+            "'full' (default) — blocks and polls until authorized, expired, denied, or timeout. " +
+            "If device_code is also provided, skips the start step and just polls the existing flow. " +
+            "'start_only' — returns verification_uri + user_code + device_code immediately, no polling. " +
+            "'poll_once' — single non-blocking poll of an existing device_code (rare; prefer mode='full' " +
+            "+ device_code to let the tool handle the wait).",
         },
         device_code: {
           type: "string",
-          description: "Required when mode='poll_once'.",
+          description:
+            "Existing device_code from a prior mode='start_only' call. Pass with mode='full' to " +
+            "block-and-poll on an existing flow (the user has already seen the code). Required " +
+            "for mode='poll_once'.",
         },
         timeout_seconds: {
           type: "number",
@@ -1235,8 +1250,9 @@ async function handleLogin(input: {
       interval: start.interval,
       expires_in: start.expires_in,
       next_action:
-        `Tell the user: "Open ${start.verification_uri} and enter the code ${start.user_code}." ` +
-        "Once they confirm they've authorized, call agentry_login again with mode='poll_once' and this device_code.",
+        `Show the user: "Open ${start.verification_uri} and enter the code ${start.user_code}." ` +
+        `Then IMMEDIATELY call agentry_login again with mode='full' and device_code='${start.device_code}'. ` +
+        `That call will block and auto-poll for up to ${start.expires_in}s — DO NOT ask the user to confirm authorization before polling.`,
     };
   }
 
@@ -1274,19 +1290,31 @@ async function handleLogin(input: {
     };
   }
 
-  // mode === "full" — do the entire flow inside one tool call.
-  const start = await api.startDeviceFlow(cfg);
-  const intervalMs = Math.max(1, start.interval) * 1000;
+  // mode === "full" — either start a fresh flow, OR poll an existing one if
+  // the agent already showed the user the code via a prior start_only call.
+  // The latter is the recommended interactive pattern: start_only → show code
+  // → full(device_code) blocks-and-polls automatically. No "tell me when done."
+  let verificationUri: string;
+  let userCode: string;
+  let deviceCode: string;
+  let intervalMs: number;
+  if (input.device_code) {
+    deviceCode = input.device_code;
+    verificationUri = "";
+    userCode = "";
+    intervalMs = 5000; // safe default; we don't have the start response here
+  } else {
+    const start = await api.startDeviceFlow(cfg);
+    deviceCode = start.device_code;
+    verificationUri = start.verification_uri;
+    userCode = start.user_code;
+    intervalMs = Math.max(1, start.interval) * 1000;
+  }
   const deadline = Date.now() + (input.timeout_seconds ?? 180) * 1000;
 
-  // We can't wait for the agent to confirm the user authorized, so the agent's
-  // calling convention here is "tell the user the code, then keep polling
-  // automatically." Surface the verification info up front in the response
-  // metadata via instructions so the calling agent can show it before the
-  // poll completes — the JSON we return at the end includes it as well.
   let lastStatus: string | null = null;
   while (Date.now() < deadline) {
-    const result = await api.pollDeviceFlow(cfg, start.device_code);
+    const result = await api.pollDeviceFlow(cfg, deviceCode);
     if ("api_key" in result) {
       const next = persistKeyResponse(cfg, result);
       return {
@@ -1296,8 +1324,8 @@ async function handleLogin(input: {
         api_key_prefix: result.prefix,
         persisted_to: "local config",
         server_url: next.server_url,
-        verification_uri_used: start.verification_uri,
-        user_code_used: start.user_code,
+        ...(verificationUri ? { verification_uri_used: verificationUri } : {}),
+        ...(userCode ? { user_code_used: userCode } : {}),
         next_action:
           "Authenticated. Call `agentry_create_project` with a project name (and local_path of the repo) to mint a DSN.",
       };
@@ -1307,8 +1335,8 @@ async function handleLogin(input: {
       return {
         ok: false,
         status: result.status,
-        verification_uri: start.verification_uri,
-        user_code: start.user_code,
+        ...(verificationUri ? { verification_uri: verificationUri } : {}),
+        ...(userCode ? { user_code: userCode } : {}),
         next_action:
           result.next_action ??
           (result.status === "expired"
@@ -1323,12 +1351,15 @@ async function handleLogin(input: {
     ok: false,
     status: "timeout",
     last_status: lastStatus,
-    verification_uri: start.verification_uri,
-    user_code: start.user_code,
-    device_code: start.device_code,
+    ...(verificationUri ? { verification_uri: verificationUri } : {}),
+    ...(userCode ? { user_code: userCode } : {}),
+    device_code: deviceCode,
     next_action:
       `Timed out after ${input.timeout_seconds ?? 180}s. ` +
-      `Confirm the user opened ${start.verification_uri} and entered ${start.user_code}, then call agentry_login again with mode='poll_once' and device_code='${start.device_code}'.`,
+      (verificationUri && userCode
+        ? `Confirm the user opened ${verificationUri} and entered ${userCode}, `
+        : "Confirm the user has authorized, ") +
+      `then call agentry_login again with mode='full' and device_code='${deviceCode}' to resume polling.`,
   };
 }
 
