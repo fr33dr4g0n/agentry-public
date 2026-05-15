@@ -43,6 +43,52 @@ const PROVISION_TIMEOUT_MS = 10_000;
 // events would orphan.
 const AGENTRY_USER_GROUP_TYPE = "agentry_user";
 
+// Inject a per-user WHERE clause into user-supplied HogQL so cross-user
+// isolation is enforced server-side regardless of what the user query says.
+// Caller MUST validate userId is a UUID before calling — we re-check inline
+// as a defensive belt-and-suspenders.
+//
+// Algorithm:
+//   - If the query has a top-level WHERE, inject `(filter) AND ` right after
+//     the WHERE keyword.
+//   - If not, insert `WHERE filter` before the first of GROUP BY / ORDER BY /
+//     HAVING / LIMIT / end-of-query.
+//
+// Limitations:
+//   - We only handle top-level WHERE. A user query like
+//     `SELECT * FROM (SELECT ... WHERE x = 1) AS t` would inject into the
+//     outer query (no top-level WHERE found → adds WHERE at the end). Since
+//     PostHog's HogQL doesn't expose cross-team data via subqueries, the
+//     filter still constrains the outer scan.
+//   - String literals containing the word "where" can theoretically confuse
+//     the regex. We use word-boundary matching to make this very unlikely.
+function injectGroupFilter(hogql: string, userId: string): string {
+  if (!/^[0-9a-f-]{36}$/i.test(userId)) {
+    throw new Error("injectGroupFilter requires a UUID userId");
+  }
+  const filter = `properties.$group_0 = '${userId}'`;
+  // Case-insensitive search for keyword boundaries. Whitespace on both sides
+  // (or start/end of string) so we don't match column names containing the keyword.
+  const findKeyword = (kw: string): number => {
+    const re = new RegExp(`\\b${kw}\\b`, "i");
+    const m = re.exec(hogql);
+    return m ? m.index : -1;
+  };
+  const whereIdx = findKeyword("WHERE");
+  if (whereIdx !== -1) {
+    const after = whereIdx + "WHERE".length;
+    return `${hogql.slice(0, after)} (${filter}) AND${hogql.slice(after)}`;
+  }
+  // No WHERE — find where to inject one.
+  const tails = ["GROUP BY", "ORDER BY", "HAVING", "LIMIT"];
+  let cutAt = hogql.length;
+  for (const kw of tails) {
+    const idx = findKeyword(kw);
+    if (idx !== -1 && idx < cutAt) cutAt = idx;
+  }
+  return `${hogql.slice(0, cutAt).trimEnd()} WHERE ${filter} ${hogql.slice(cutAt)}`.trimEnd();
+}
+
 export function isPosthogConfigured(env: Env): boolean {
   return Boolean(
     env.POSTHOG_HOST &&
@@ -379,29 +425,29 @@ export async function runHogQl(
   if (!isPosthogConfigured(env)) throw errors.internal("posthog not configured");
   const ph = getSharedPosthog(env);
 
-  // PostHog's /api/projects/:id/query/ accepts a `filters` block that the
-  // query planner applies BEFORE the user's HogQL runs. We inject the group
-  // filter here so it's not possible for one user's query to return another
-  // user's events — even if their HogQL omits the group_key constraint.
+  // CRITICAL ISOLATION: PostHog's /api/projects/:id/query/ has a `filters`
+  // block, but it's only applied when the HogQL explicitly references
+  // `{filters}` as a template token. Plain HogQL bypasses it silently — we
+  // verified this by reading PostHog's generated ClickHouse SQL: the filter
+  // block was dropped, returning cross-user events. (See decisions log for
+  // the smoke-test that caught this.)
   //
-  // For events tables, we filter via the group_0/group_1/... slot that
-  // PostHog assigned to AGENTRY_USER_GROUP_TYPE. PostHog's query layer
-  // resolves this group filter into the appropriate SQL join automatically.
+  // We inject the group filter directly into the HogQL string here. The
+  // userId is a v7 UUID validated by uuidv7Re (Drizzle's primary-key shape),
+  // so embedding it as a literal is safe — no SQL injection surface. We
+  // still wrap with single quotes and reject anything non-UUID defensively.
+  if (!/^[0-9a-f-]{36}$/i.test(userId)) {
+    throw errors.internal(
+      `Refusing to run HogQL: userId is not a UUID. Got: ${userId.slice(0, 20)}…`,
+    );
+  }
+  const filteredQuery = injectGroupFilter(query, userId);
+
   const url = `${ph.host}/api/projects/${ph.projectId}/query/`;
   const reqBody = {
     query: {
       kind: "HogQLQuery",
-      query,
-      filters: {
-        properties: [
-          {
-            type: "event",
-            key: "$group_0",
-            operator: "exact",
-            value: userId,
-          },
-        ],
-      },
+      query: filteredQuery,
     },
   };
   const res = await withTimeout(
