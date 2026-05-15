@@ -110,12 +110,12 @@ export async function apiFetch<T>(
   const url = opts.absoluteUrl ?? `${cfg.server_url.replace(/\/$/, "")}${pathOrUrl}`;
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "user-agent": "agentry-mcp/0.0.8",
+    "user-agent": "agentry-mcp/0.0.9",
   };
   if (!opts.skipAuth) {
     if (opts.dsnAuth) {
       headers["x-sentry-auth"] =
-        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.8`;
+        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.9`;
     } else if (cfg.api_key) {
       headers["authorization"] = `Bearer ${cfg.api_key}`;
     }
@@ -227,6 +227,23 @@ export const api = {
       { body }
     );
   },
+  // Idempotent recovery for first-login PostHog provisioning failures. If
+  // PostHog was 503 at the moment the user logged in, the api_key was minted
+  // but no analytics backend was attached → every /v1/track/ 503s with
+  // "user has no PostHog project provisioned". This call re-runs the
+  // provisioning step without re-running the GitHub device flow.
+  repairAnalyticsBackend(
+    cfg: AgentryConfig,
+  ): Promise<{
+    provisioned: boolean;
+    posthog_project_id: number | null;
+    already_existed?: boolean;
+    error?: string;
+    reason?: string;
+    next_action: string;
+  }> {
+    return apiFetch(cfg, "/v1/auth/posthog/provision", { body: {} });
+  },
   getInstallSnippet(cfg: AgentryConfig, language: string): Promise<InstallSnippet> {
     return apiFetch<InstallSnippet>(
       cfg,
@@ -286,7 +303,7 @@ export const api = {
       headers: {
         authorization: `Bearer ${publicKey}`,
         "content-type": "application/json",
-        "user-agent": "agentry-mcp/0.0.8",
+        "user-agent": "agentry-mcp/0.0.9",
       },
       body: opts.body,
     });

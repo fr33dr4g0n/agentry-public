@@ -422,6 +422,7 @@ describe("tool list completeness", () => {
         "agentry_record_suppression",
         "agentry_register_webhook",
         "agentry_remember",
+        "agentry_repair_analytics",
         "agentry_resolve_case",
         "agentry_rotate_key",
         "agentry_run_recipe",

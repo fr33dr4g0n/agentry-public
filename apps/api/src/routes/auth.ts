@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { eq } from "drizzle-orm";
-import { errors, mintApiKey, uuidv7 } from "@agentry/shared";
+import { errors, mintApiKey, uuidv7 } from "@agentrysh/shared";
 import { apiKeys, users } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey } from "../middleware.js";
@@ -265,6 +265,50 @@ router.post("/keys/rotate", requireApiKey(), async (c) => {
     next_action:
       "Store this api_key — your previous key is now revoked. Update ~/.agentry/config.json.",
   });
+});
+
+// Idempotent recovery: re-attempt PostHog provisioning for the authed user.
+// First-login provisioning is best-effort — if PostHog was 503 at the moment of
+// login, the user ends up with an api_key but no analytics backend, and every
+// /v1/track/ POST will fail with "user has no PostHog project provisioned".
+// This endpoint lets the agent recover without rerunning the GitHub device
+// flow (which would mint + persist a new api_key, churning the user's config).
+router.post("/posthog/provision", requireApiKey(), async (c) => {
+  const user = c.get("user");
+  if (!isPosthogConfigured(c.env)) {
+    return c.json({
+      provisioned: false,
+      posthog_project_id: null,
+      reason: "agentry is not configured with PostHog credentials on this deployment.",
+      next_action:
+        "Nothing the customer can do — the agentry operator hasn't configured PostHog yet. " +
+        "Errors and deploys still work; analytics ingest will continue to 503 until PostHog is wired.",
+    }, 503);
+  }
+  // ensurePosthogForUser is idempotent: returns existing row if present, else
+  // creates a fresh PostHog project. Errors propagate to the caller so the
+  // agent sees the actual upstream message (PostHog 503 etc).
+  try {
+    const r = await ensurePosthogForUser(c.env, user.id, user.githubUsername);
+    return c.json({
+      provisioned: r.provisioned,
+      posthog_project_id: r.posthogProjectId,
+      already_existed: !r.provisioned && r.posthogProjectId !== null,
+      next_action: r.posthogProjectId
+        ? "Analytics backend is wired. Re-run agentry_verify_install — the analytics signal " +
+          "should now ✅. If it still fails, the issue is elsewhere (event shape, distinct_id, etc)."
+        : "Provisioning did not return a project id — PostHog is likely still 503. Retry in 30–60s.",
+    });
+  } catch (err) {
+    return c.json({
+      provisioned: false,
+      posthog_project_id: null,
+      error: err instanceof Error ? err.message : String(err),
+      next_action:
+        "Upstream PostHog provisioning failed. Wait 30–60s and retry agentry_repair_analytics. " +
+        "If it stays down, errors and deploys still work — analytics ingest will queue until PostHog recovers.",
+    }, 503);
+  }
 });
 
 export default router;

@@ -45,7 +45,7 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
       "     Show the user the code and URL (DO NOT ask them to confirm authorization — they'll " +
       "     just open the URL, paste the code, and you'll poll). " +
       "  2. IMMEDIATELY call again with mode='full' + the device_code from step 1. " +
-      "     This blocks and auto-polls every ~5s for up to timeout_seconds (default 180). " +
+      "     This blocks and auto-polls every ~5s for up to timeout_seconds (default 300 = 5min). " +
       "     Returns the api_key when the user authorizes, or status='expired'/'denied' on failure. " +
       "" +
       "DO NOT ask the user 'tell me once you've authorized'. The second call handles the wait. " +
@@ -75,11 +75,24 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
         },
         timeout_seconds: {
           type: "number",
-          description: "Cap on total polling time when mode='full'. Defaults to 180.",
+          description: "Cap on total polling time when mode='full'. Defaults to 300 (5 min).",
         },
       },
       additionalProperties: false,
     },
+  },
+  {
+    name: "agentry_repair_analytics",
+    description:
+      "Re-attempt PostHog provisioning for the authenticated user. Idempotent — if the user " +
+      "already has a PostHog project, returns its id without recreating. Use this when " +
+      "agentry_verify_install reports analytics ❌ with reason 'no_posthog_project' OR when a " +
+      "/v1/track/ call returns 503 with that code. " +
+      "" +
+      "DO NOT re-run agentry_login for this failure mode — that mints a new api_key and " +
+      "churns the user's local config. This tool runs only the provisioning step that was " +
+      "supposed to happen at login.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     name: "agentry_rotate_key",
@@ -997,6 +1010,8 @@ export async function dispatchTool(
         });
       case "agentry_rotate_key":
         return await handleRotateKey();
+      case "agentry_repair_analytics":
+        return await handleRepairAnalytics();
       case "agentry_list_projects":
         return await handleListProjects();
       case "agentry_create_project":
@@ -1310,7 +1325,7 @@ async function handleLogin(input: {
     userCode = start.user_code;
     intervalMs = Math.max(1, start.interval) * 1000;
   }
-  const deadline = Date.now() + (input.timeout_seconds ?? 180) * 1000;
+  const deadline = Date.now() + (input.timeout_seconds ?? 300) * 1000;
 
   let lastStatus: string | null = null;
   while (Date.now() < deadline) {
@@ -1355,7 +1370,7 @@ async function handleLogin(input: {
     ...(userCode ? { user_code: userCode } : {}),
     device_code: deviceCode,
     next_action:
-      `Timed out after ${input.timeout_seconds ?? 180}s. ` +
+      `Timed out after ${input.timeout_seconds ?? 300}s. ` +
       (verificationUri && userCode
         ? `Confirm the user opened ${verificationUri} and entered ${userCode}, `
         : "Confirm the user has authorized, ") +
@@ -1388,6 +1403,34 @@ async function handleRotateKey(): Promise<ToolResult> {
       resp.next_action ??
       "New key stored locally. Old key is revoked — update any places it was pasted (CI envs, etc).",
   };
+}
+
+async function handleRepairAnalytics(): Promise<ToolResult> {
+  const cfg = loadConfig();
+  if (!cfg.api_key) {
+    return {
+      error: {
+        code: "no_key",
+        message: "No API key on file — can't repair anything for an unauthenticated session.",
+        next_action: "Call `agentry_login` first.",
+      },
+    };
+  }
+  try {
+    const resp = await api.repairAnalyticsBackend(cfg);
+    return resp;
+  } catch (err) {
+    return {
+      error: {
+        code: "repair_failed",
+        message: err instanceof Error ? err.message : String(err),
+        next_action:
+          "Upstream PostHog provisioning failed. If the error mentions 5xx / timeouts / rate " +
+          "limits, wait 30–60s and call agentry_repair_analytics again. Errors and deploys are " +
+          "unaffected; only analytics ingest needs PostHog.",
+      },
+    };
+  }
 }
 
 async function handleListProjects(): Promise<ToolResult> {
@@ -2410,10 +2453,28 @@ async function handleVerifyInstall(input: {
     }
   }
 
+  // Detect the specific PostHog-not-provisioned failure mode so we can point
+  // the agent at the cheap fix (agentry_repair_analytics) instead of the
+  // expensive one (re-run agentry_login + re-instrument everything).
+  const analyticsDetail = checks.analytics?.detail ?? "";
+  const noPosthogProject =
+    !checks.analytics?.ok &&
+    (analyticsDetail.includes("no_posthog_project") ||
+      analyticsDetail.includes("user has no PostHog project provisioned"));
+
   const baseAction =
     failed.length === 0
       ? "Install verified. Errors land in agentry_list_cases; analytics flow to PostHog; deploys via agentry_list_deploys."
+      : noPosthogProject && failed.length === 1
+      ? "Analytics is the only failed signal AND the cause is missing PostHog provisioning " +
+        "(first-login provisioning was best-effort and failed). Call agentry_repair_analytics " +
+        "— it's idempotent and runs the same provisioning step. Then re-run agentry_verify_install. " +
+        "DO NOT re-run agentry_login for this."
       : `Install incomplete. Failed signal types: ${failed.join(", ")}. ` +
+        (noPosthogProject
+          ? "Analytics failed because the user has no PostHog project provisioned — " +
+            "call agentry_repair_analytics, then re-run verify. "
+          : "") +
         "For each failed type, re-read its corresponding step in agentry_install_guide and fix.";
 
   return {
