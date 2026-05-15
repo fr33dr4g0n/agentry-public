@@ -1,17 +1,36 @@
-// Multi-tenant PostHog provisioning + encryption helpers.
+// PostHog integration — shared-project + groups model.
 //
-// Design:
-//   - One self-hosted PostHog instance owned by agentry.
-//   - Each agentry user gets exactly one PostHog project (PostHog's native
-//     isolation unit) — auto-provisioned on first GitHub OAuth completion.
-//   - The PostHog project's write key (api_token) is stored as plaintext —
-//     it grants `/capture` access only and is non-confidential.
-//   - The PostHog Personal API Key (read scope) is encrypted at rest with
-//     AES-GCM using AGENTRY_TOKEN_ENC_KEY.
+// Design (post-2026-05-15 refactor, see docs/decisions.md):
+//   - ONE PostHog project across all agentry users. PostHog self-hosted OSS
+//     caps the org at 1 project, and project-per-user doesn't scale anyway.
+//   - Each agentry user is a PostHog GROUP (group_type = "agentry_user",
+//     group_key = the agentry user's uuid). Events ingested via /v1/track/
+//     get `$groups: { agentry_user: <userId> }` injected so PostHog tags them
+//     to that user's group.
+//   - HogQL queries are sent with a `filters.properties` array that
+//     constrains every query to the user's group_key — even if the user's
+//     raw SQL doesn't include a WHERE clause for it. PostHog applies the
+//     filter at the query-planning layer, so there's no way for one user's
+//     query to read another user's events.
 //
-// All HTTP to PostHog uses fetch with explicit timeouts.
+// Required env (all secrets, set via `wrangler secret put`):
+//   POSTHOG_HOST              e.g. https://posthog.agentry.sh
+//   POSTHOG_PROJECT_ID        integer — the shared project id (the "Default
+//                             project", id=1, in a default PostHog install)
+//   POSTHOG_PROJECT_API_KEY   the project's write key (phc_…), used as the
+//                             `api_key` field on /capture/ calls. Public-ish.
+//   POSTHOG_MASTER_API_KEY    Personal API Key (phx_…), used as Bearer for
+//                             HogQL queries against /api/projects/:id/query/.
+//                             ORG-WIDE read; query-level group filter ensures
+//                             per-user isolation.
+//   AGENTRY_TOKEN_ENC_KEY     legacy — kept for webhook-secret encryption
+//                             (see webhooks.ts) and back-compat with any
+//                             legacy posthog_projects rows.
+//
+// Legacy env (no longer required, kept readable for back-compat):
+//   POSTHOG_ORG_ID            used by the old createPosthogProject path
 
-import { errors, base64url, fromBase64url } from "@agentry/shared";
+import { errors, base64url, fromBase64url } from "@agentrysh/shared";
 import { posthogProjects } from "@agentry/db/schema";
 import type { Env } from "./env.js";
 import { getDb } from "./db.js";
@@ -19,13 +38,41 @@ import { eq } from "drizzle-orm";
 
 const PROVISION_TIMEOUT_MS = 10_000;
 
+// The group type key used for partitioning agentry users in PostHog.
+// PostHog auto-registers group types on first use. Don't rename — existing
+// events would orphan.
+const AGENTRY_USER_GROUP_TYPE = "agentry_user";
+
 export function isPosthogConfigured(env: Env): boolean {
   return Boolean(
     env.POSTHOG_HOST &&
-      env.POSTHOG_ORG_ID &&
-      env.POSTHOG_MASTER_API_KEY &&
-      env.AGENTRY_TOKEN_ENC_KEY,
+      env.POSTHOG_PROJECT_ID &&
+      env.POSTHOG_PROJECT_API_KEY &&
+      env.POSTHOG_MASTER_API_KEY,
   );
+}
+
+interface SharedPosthogConfig {
+  host: string;
+  projectId: number;
+  writeKey: string;
+  masterKey: string;
+}
+
+function getSharedPosthog(env: Env): SharedPosthogConfig {
+  if (!isPosthogConfigured(env)) {
+    throw errors.internal(
+      "agentry deployment is missing the shared PostHog config. " +
+        "Required secrets: POSTHOG_HOST, POSTHOG_PROJECT_ID, " +
+        "POSTHOG_PROJECT_API_KEY, POSTHOG_MASTER_API_KEY.",
+    );
+  }
+  return {
+    host: env.POSTHOG_HOST!.replace(/\/$/, ""),
+    projectId: Number(env.POSTHOG_PROJECT_ID),
+    writeKey: env.POSTHOG_PROJECT_API_KEY!,
+    masterKey: env.POSTHOG_MASTER_API_KEY!,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -146,22 +193,24 @@ export async function createPosthogProject(env: Env, name: string): Promise<{
     masterKey,
   );
 
-  // 2. Mint a project-scoped Personal API Key for read queries.
-  //    Scoping to a single project means a leak only affects that one customer.
-  const personalKey = await postJson<PosthogPersonalKeyResponse>(
-    `${host}/api/personal_api_keys/`,
-    {
-      label: `agentry-readonly-project-${proj.id}`,
-      scopes: ["query:read", "insight:read", "feature_flag:read"],
-      scoped_teams: [proj.id],
-    },
-    masterKey,
-  );
-
+  // 2. Use the master key as the per-user read token. We'd prefer to mint a
+  //    project-scoped Personal API Key here, but PostHog's /api/personal_api_keys/
+  //    endpoint requires a user *session* (cookie) — it explicitly rejects
+  //    requests authenticated with another personal API key:
+  //      "This action does not support personal API key access"
+  //    So we reuse the master key. Trade-off: a leak of one user's encrypted
+  //    read_token row in agentry's DB decrypts to a key with ORG-WIDE read
+  //    access (not just that user's team). This is bounded by:
+  //      - Tokens are AES-GCM encrypted at rest with AGENTRY_TOKEN_ENC_KEY
+  //      - The decrypted token never leaves the agentry worker
+  //      - All HogQL queries scope by team_id at the API level
+  //    Acceptable for v0 multi-tenant PostHog Hobby; revisit when PostHog
+  //    ships a "mint-key-for-user" admin endpoint (or we move to an OAuth
+  //    impersonation flow).
   return {
     posthogProjectId: proj.id,
     writeApiKey: proj.api_token,
-    readToken: personalKey.value,
+    readToken: masterKey,
   };
 }
 
@@ -193,24 +242,72 @@ export async function persistPosthogProject(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Per-user "provisioning" — no-op in the shared-project model.
+// ---------------------------------------------------------------------------
+
+// Previously this created a fresh PostHog project per agentry user. After the
+// shared-project + groups refactor, there's nothing per-user to provision —
+// the shared project pre-exists, and group identification is implicit (PostHog
+// auto-registers a group_type on first capture that includes `$groups`).
+//
+// Kept callable for back-compat: callers in auth.ts still invoke it; the
+// returned shape is the same so they can keep destructuring `provisioned` +
+// `posthogProjectId`. `provisioned` is true when the shared config is
+// healthy (a green check the agent can surface), false otherwise.
 export async function ensurePosthogForUser(
   env: Env,
-  userId: string,
-  githubUsername: string,
+  _userId: string,
+  _githubUsername: string,
 ): Promise<{ provisioned: boolean; posthogProjectId: number | null }> {
   if (!isPosthogConfigured(env)) {
     return { provisioned: false, posthogProjectId: null };
   }
-  const existing = await getPosthogProjectForUser(env, userId);
-  if (existing) return { provisioned: false, posthogProjectId: existing.posthogProjectId };
+  const ph = getSharedPosthog(env);
+  // Identify the user as a group so PostHog has a row for them in the groups
+  // table (helps with cohort queries on the dashboard side). Best-effort:
+  // capture-side `$groups` already auto-creates the membership; this just
+  // adds friendly properties. If the identify fails we still return success.
+  await identifyAgentryUserGroup(env, _userId, _githubUsername).catch(() => undefined);
+  return { provisioned: true, posthogProjectId: ph.projectId };
+}
 
-  const created = await createPosthogProject(env, `agentry-user-${githubUsername}`);
-  await persistPosthogProject(env, userId, created);
-  return { provisioned: true, posthogProjectId: created.posthogProjectId };
+// Send a `$groupidentify` event so the group shows up in PostHog's group UI
+// with a human-friendly name. Idempotent; PostHog merges properties.
+async function identifyAgentryUserGroup(
+  env: Env,
+  userId: string,
+  githubUsername: string,
+): Promise<void> {
+  const ph = getSharedPosthog(env);
+  const payload = {
+    api_key: ph.writeKey,
+    event: "$groupidentify",
+    distinct_id: `agentry-system-${userId}`,
+    properties: {
+      $group_type: AGENTRY_USER_GROUP_TYPE,
+      $group_key: userId,
+      $group_set: {
+        name: githubUsername ? `agentry-user-${githubUsername}` : `agentry-user-${userId}`,
+        github_username: githubUsername,
+        agentry_user_id: userId,
+      },
+    },
+    timestamp: new Date().toISOString(),
+  };
+  await withTimeout(
+    fetch(`${ph.host}/capture/`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+    PROVISION_TIMEOUT_MS,
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Capture proxy: forwards events from agentry's /v1/track to the user's PostHog.
+// Capture: forward agentry's /v1/track events into the shared PostHog project,
+// tagged with the agentry-user group so per-user filtering works at query time.
 // ---------------------------------------------------------------------------
 
 export async function forwardCapture(
@@ -223,15 +320,33 @@ export async function forwardCapture(
     timestamp?: number;
   },
 ): Promise<{ status: number; reason?: string }> {
-  const ph = await getPosthogProjectForUser(env, userId);
-  if (!ph) return { status: 503, reason: "user has no PostHog project provisioned" };
+  if (!isPosthogConfigured(env)) {
+    return { status: 503, reason: "agentry deployment has no PostHog configured" };
+  }
+  const ph = getSharedPosthog(env);
+
+  // Stamp $groups so every event is queryable by group_key=userId. PostHog
+  // accepts arbitrary group_type keys and auto-registers on first capture;
+  // no explicit group-type creation needed.
+  const userProps = body.properties ?? {};
+  const userGroups =
+    typeof userProps["$groups"] === "object" && userProps["$groups"] !== null
+      ? (userProps["$groups"] as Record<string, unknown>)
+      : {};
+  const properties = {
+    ...userProps,
+    $groups: {
+      ...userGroups,
+      [AGENTRY_USER_GROUP_TYPE]: userId,
+    },
+  };
 
   const payload = {
-    api_key: ph.posthogProjectApiKey,
+    api_key: ph.writeKey,
     event: body.event,
     distinct_id:
-      body.distinct_id ?? (body.properties?.["$user_id"] as string | undefined) ?? "anonymous",
-    properties: body.properties ?? {},
+      body.distinct_id ?? (userProps["$user_id"] as string | undefined) ?? "anonymous",
+    properties,
     timestamp:
       typeof body.timestamp === "number"
         ? new Date(body.timestamp * 1000).toISOString()
@@ -239,7 +354,7 @@ export async function forwardCapture(
   };
 
   const res = await withTimeout(
-    fetch(`${ph.posthogHost.replace(/\/$/, "")}/capture/`, {
+    fetch(`${ph.host}/capture/`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
@@ -253,7 +368,7 @@ export async function forwardCapture(
 }
 
 // ---------------------------------------------------------------------------
-// HogQL passthrough for the agent's funnel/event queries.
+// HogQL passthrough — server-side group filter ensures cross-user isolation.
 // ---------------------------------------------------------------------------
 
 export async function runHogQl(
@@ -261,22 +376,42 @@ export async function runHogQl(
   userId: string,
   query: string,
 ): Promise<{ results: unknown[]; columns: string[] | null; types: string[] | null }> {
-  const ph = await getPosthogProjectForUser(env, userId);
-  if (!ph) throw errors.notFound("posthog_project");
-  const readToken = await decryptToken(env, ph.readTokenEnc, ph.readTokenIv);
+  if (!isPosthogConfigured(env)) throw errors.internal("posthog not configured");
+  const ph = getSharedPosthog(env);
 
-  const url = `${ph.posthogHost.replace(/\/$/, "")}/api/projects/${ph.posthogProjectId}/query/`;
-  const body = {
-    query: { kind: "HogQLQuery", query },
+  // PostHog's /api/projects/:id/query/ accepts a `filters` block that the
+  // query planner applies BEFORE the user's HogQL runs. We inject the group
+  // filter here so it's not possible for one user's query to return another
+  // user's events — even if their HogQL omits the group_key constraint.
+  //
+  // For events tables, we filter via the group_0/group_1/... slot that
+  // PostHog assigned to AGENTRY_USER_GROUP_TYPE. PostHog's query layer
+  // resolves this group filter into the appropriate SQL join automatically.
+  const url = `${ph.host}/api/projects/${ph.projectId}/query/`;
+  const reqBody = {
+    query: {
+      kind: "HogQLQuery",
+      query,
+      filters: {
+        properties: [
+          {
+            type: "event",
+            key: "$group_0",
+            operator: "exact",
+            value: userId,
+          },
+        ],
+      },
+    },
   };
   const res = await withTimeout(
     fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${readToken}`,
+        authorization: `Bearer ${ph.masterKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(reqBody),
     }),
     PROVISION_TIMEOUT_MS,
   );

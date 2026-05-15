@@ -5,11 +5,15 @@ export interface Env {
   TURSO_AUTH_TOKEN: string;
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
-  // PostHog multi-tenant analytics (optional in v0; if unset, /v1/track 503s)
+  // PostHog analytics — shared-project + groups model. agentry sends every
+  // user's events into ONE PostHog project, tagged with `$groups.agentry_user
+  // = <userId>` so HogQL queries filter per user. See apps/api/src/posthog.ts.
   POSTHOG_HOST?: string;            // e.g. https://posthog.agentry.sh
-  POSTHOG_ORG_ID?: string;          // The agentry-managed org id in PostHog
-  POSTHOG_MASTER_API_KEY?: string;  // Personal API key with org-admin scope
-  AGENTRY_TOKEN_ENC_KEY?: string;   // 32-byte base64url AES-256 key for PostHog read tokens
+  POSTHOG_PROJECT_ID?: string;      // shared project id (e.g. "1" — PostHog's Default project)
+  POSTHOG_PROJECT_API_KEY?: string; // shared project write key (phc_…) for /capture/
+  POSTHOG_MASTER_API_KEY?: string;  // org-admin Personal API key (phx_…) for HogQL queries
+  POSTHOG_ORG_ID?: string;          // legacy — kept for createPosthogProject back-compat
+  AGENTRY_TOKEN_ENC_KEY?: string;   // 32-byte base64url AES-256 key (used by webhooks.ts)
   // Body / scan caps
   MAX_BODY_BYTES?: string;
   MAX_SUPPRESSIONS_PER_PROJECT?: string;
