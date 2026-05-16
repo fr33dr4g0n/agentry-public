@@ -82,6 +82,88 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     },
   },
   {
+    name: "agentry_configure_session_replay",
+    description:
+      "Enable / disable / customize PostHog session replay for the user's project. " +
+      "Session replay is OFF by default — agentry users opt in. Recordings eat significant " +
+      "storage, so pick a strategy that matches the customer's debugging needs:" +
+      "" +
+      "  - 'off'          — disable. No new sessions recorded." +
+      "  - 'all'          — 100% sampling. Heavy storage cost; only pick if the customer's " +
+      "                     traffic is low AND they want every session recorded." +
+      "  - 'sampled'      — random sample at sample_rate (0–1, default 0.1 = 10%). Good " +
+      "                     balance of coverage + cost for most apps." +
+      "  - 'url_scoped'   — record only sessions that hit specific URLs (e.g. /checkout/*). " +
+      "                     Pass url_triggers: [{url, matching}]. Best for funnel debugging." +
+      "  - 'errors_only'  — record nothing by default, but the customer's app calls " +
+      "                     `posthog.startSessionRecording()` from captureError (or wherever " +
+      "                     they want). Cheapest; recording starts JUST IN TIME when something " +
+      "                     breaks. After picking this, ALSO wire the call into the customer's " +
+      "                     agentry helper (drop_in_helper from agentry_install_guide)." +
+      "" +
+      "Workflow: ASK THE USER first which strategy they want and what retention. Then call this " +
+      "tool with the answer. If 'errors_only', also edit the agentry helper to call " +
+      "posthog.startSessionRecording() inside captureError. After this, recordings show up in " +
+      "PostHog's Replay tab — call agentry_session_replay_status to get the deep-link URL.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string", description: "Project id. Defaults to local default." },
+        strategy: {
+          type: "string",
+          enum: ["off", "all", "sampled", "url_scoped", "errors_only"],
+        },
+        sample_rate: {
+          type: "number",
+          description: "0–1; only used when strategy='sampled'. Default 0.1 (10%).",
+        },
+        retention_days: {
+          type: "number",
+          description: "How many days to retain recordings. Storage-bounded. 30 / 90 / 365.",
+        },
+        min_duration_ms: {
+          type: "number",
+          description:
+            "Drop recordings shorter than this (ms). 0 = keep all. Useful for skipping bounces. " +
+            "Default unset.",
+        },
+        url_triggers: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              url: { type: "string" },
+              matching: { type: "string", enum: ["exact", "regex"] },
+            },
+            required: ["url"],
+            additionalProperties: false,
+          },
+          description: "When strategy='url_scoped': pages where recording should start.",
+        },
+      },
+      required: ["strategy"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_session_replay_status",
+    description:
+      "Get the current session-replay configuration for the user's project AND a deep-link " +
+      "URL into PostHog's Replay tab for viewing recordings. " +
+      "" +
+      "agentry's MCP can't currently retrieve recording bytes programmatically — the master " +
+      "Personal API Key needs `session_recording:read` scope expanded. As an interim, this " +
+      "tool returns `web_ui_url` — paste into a browser to view recordings. Coming: " +
+      "agentry_get_session_replays(case_id) returning playable URLs once scope is widened.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "agentry_repair_analytics",
     description:
       "Re-attempt PostHog provisioning for the authenticated user. Idempotent — if the user " +
@@ -1012,6 +1094,21 @@ export async function dispatchTool(
         return await handleRotateKey();
       case "agentry_repair_analytics":
         return await handleRepairAnalytics();
+      case "agentry_configure_session_replay":
+        return await handleConfigureSessionReplay({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          strategy: String(a.strategy ?? "") as never,
+          sample_rate: typeof a.sample_rate === "number" ? a.sample_rate : undefined,
+          retention_days: typeof a.retention_days === "number" ? a.retention_days : undefined,
+          min_duration_ms: typeof a.min_duration_ms === "number" ? a.min_duration_ms : undefined,
+          url_triggers: Array.isArray(a.url_triggers)
+            ? (a.url_triggers as Array<{ url: string; matching?: string }>)
+            : undefined,
+        });
+      case "agentry_session_replay_status":
+        return await handleSessionReplayStatus(
+          a.project_id ? String(a.project_id) : undefined,
+        );
       case "agentry_list_projects":
         return await handleListProjects();
       case "agentry_create_project":
@@ -1431,6 +1528,49 @@ async function handleRepairAnalytics(): Promise<ToolResult> {
       },
     };
   }
+}
+
+async function handleConfigureSessionReplay(input: {
+  project_id?: string;
+  strategy: "off" | "all" | "sampled" | "url_scoped" | "errors_only";
+  sample_rate?: number;
+  retention_days?: number;
+  min_duration_ms?: number;
+  url_triggers?: Array<{ url: string; matching?: string }>;
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const picked = pickProject(cfg, input.project_id);
+  if (!picked) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project_id given and no default project set.",
+        next_action: "Pass project_id, or call agentry_create_project.",
+      },
+    };
+  }
+  return await api.configureSessionReplay(cfg, picked.id, {
+    strategy: input.strategy,
+    sample_rate: input.sample_rate,
+    retention_days: input.retention_days,
+    min_duration_ms: input.min_duration_ms,
+    url_triggers: input.url_triggers as Array<{ url: string; matching?: "exact" | "regex" }> | undefined,
+  });
+}
+
+async function handleSessionReplayStatus(projectId?: string): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const picked = pickProject(cfg, projectId);
+  if (!picked) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project_id given and no default project set.",
+        next_action: "Pass project_id, or call agentry_create_project.",
+      },
+    };
+  }
+  return await api.getSessionReplayStatus(cfg, picked.id);
 }
 
 async function handleListProjects(): Promise<ToolResult> {

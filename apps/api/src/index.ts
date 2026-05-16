@@ -20,6 +20,7 @@ import feedbackRoutes from "./routes/feedback.js";
 import adminRoutes from "./routes/admin.js";
 import usageRoutes from "./routes/usage.js";
 import sourcemapRoutes from "./routes/sourcemaps.js";
+import posthogConfigRoutes from "./routes/posthog-config.js";
 import { snapshotAllUsers } from "./usage.js";
 import type { AppBindings, Env } from "./env.js";
 
@@ -175,6 +176,9 @@ export function createApp() {
 
   // Sourcemap upload / list / delete (DSN auth, project-scoped).
   app.route("/", sourcemapRoutes);
+
+  // PostHog per-user feature config — session replay today, more coming.
+  app.route("/", posthogConfigRoutes);
 
   return app;
 }

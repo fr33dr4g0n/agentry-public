@@ -4,6 +4,37 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-15 (evening) — Session replay opt-in + agent-driven strategy
+
+**Problem.** PostHog session replay is technically available on every per-user team (we self-host the full OSS stack), but eats significant storage. "Recording every session always" is the wrong default — it bankrupts disk for any non-trivial traffic.
+
+**Decision.** Session replay is OFF by default at the team level. agentry's MCP exposes `agentry_configure_session_replay` so the agent can enable it on the user's explicit request, choosing one of five strategies tuned to the storage/coverage tradeoff:
+
+  - `off` — disable.
+  - `all` — 100% sampling. Storage-heavy; pick only at low traffic.
+  - `sampled` — random sample at `sample_rate` (default 0.1 = 10%). Default-sensible.
+  - `url_scoped` — record only sessions hitting specific URLs (e.g. `/checkout/*`). Best for funnel debugging.
+  - `errors_only` — recording never auto-starts; the customer's app calls `posthog.startSessionRecording()` from captureError (or similar trigger). Cheapest — replay tape rolls only when something breaks. Agent wires the call into the customer's agentry helper.
+
+The agent's conversational UX (from `agentry.md`): ASK the user which strategy, ask retention (30/90/365 days), then call `agentry_configure_session_replay`. For `errors_only`, the agent ALSO edits the customer's helper to call `posthog.startSessionRecording()` inside the error path.
+
+Retention is enforced by PostHog itself via `session_recording_retention_period` on each team — no agentry cron needed. Recordings older than the period are deleted automatically.
+
+**Implementation.** `PATCH /api/environments/<team_id>/` on PostHog accepts the per-team settings update. The master Personal API Key has scope to modify team settings, so no admin-sidecar dependency for runtime toggles. New routes:
+
+  - `POST /v1/projects/:id/posthog/session-replay/configure` — accepts {strategy, sample_rate?, retention_days?, min_duration_ms?, url_triggers?}, maps to PostHog team settings.
+  - `GET /v1/projects/:id/posthog/session-replay/status` — returns current config + a deep-link `web_ui_url` into PostHog's Replay tab.
+
+**Programmatic recording retrieval — gated on master-key scope expansion.** PostHog's `GET /api/environments/<team_id>/session_recordings/` endpoint requires the Personal API Key to have `session_recording:read` scope. The default master key (minted in PostHog's UI without explicit scope selection) doesn't have it. Same gate blocks `feature_flag:*`, `cohort:*`, `survey:*`.
+
+Workaround until the scope is widened: agent calls `agentry_session_replay_status`, surfaces the `web_ui_url` to the user, user views recordings in PostHog's browser UI. Direct retrieval via MCP is a follow-up.
+
+**Feature flags / cohorts / surveys / A/B tests — same story.** All supported by the OSS stack on every per-user team. Accessible today via HogQL (cohorts) + PostHog's web UI (everything). MCP tools are pending one operator action: rotate the master Personal API Key in PostHog's UI to grant `*` scope (or the explicit feature/cohort/survey/recording scopes). Once expanded, ~5 MCP tools per feature land in a follow-up release. `agentry.md` documents both the existing access paths and the pending MCP surface so an agent reading it cold doesn't repeatedly try the unscoped endpoints.
+
+**Why this design (vs always-on recording).** Storage cost is real. PostHog OSS stores recordings in object storage (SeaweedFS in our deploy); they're large. Letting the agent + user choose a strategy keeps storage proportional to debugging value. The `errors_only` strategy is particularly powerful — recording only "the 30s of session that preceded the error" gives you the highest signal-per-byte ratio possible.
+
+---
+
 ## 2026-05-15 (later) — PostHog isolation v3: per-user teams via admin sidecar
 
 **Problem.** After the shared-project + group wrap refactor (entry below), I asked myself the right question: is the wrap iron-clad? Honest answer: no. The wrap is a regex; an attacker with deep HogQL knowledge could probably find a syntax that confuses it (backtick-quoted identifiers, schema-prefixed table names, PostHog-specific virtual columns like `events.person` that pull from un-isolated `persons` data, ClickHouse `SETTINGS` clauses, Unicode look-alikes, etc.). Each new HogQL feature is a new potential bypass surface. With "a leak would kill the project" as the stated stakes, the regex approach is too brittle.

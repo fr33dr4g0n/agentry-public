@@ -362,6 +362,65 @@ attribute to deploys via last_deploy_sha. The agent investigates cases by:
 Suppress noise via POST /v1/projects/:id/suppressions — pattern + action
 (auto_ignore / auto_resolve / prompt_hint).
 
+## Session replay (PostHog) — OPT-IN, agent-driven strategy
+
+agentry's per-user PostHog team supports session replay (the full PostHog
+OSS feature: video-like reconstruction of a user's browser session). It's
+OFF by default. The agent enables it on the user's request, with one of:
+
+| Strategy        | What it does                                                           | Storage cost |
+|-----------------|------------------------------------------------------------------------|--------------|
+| \`off\`           | No new recordings.                                                     | None         |
+| \`all\`           | 100% sampling — every session.                                         | Heavy        |
+| \`sampled\`       | Random sample at \`sample_rate\` (default 0.1). Good cost/coverage.    | Medium       |
+| \`url_scoped\`    | Only sessions hitting URLs in \`url_triggers\`. Best for funnels.      | Light        |
+| \`errors_only\`   | No automatic sampling; recording starts JIT when the customer's app    | Lightest     |
+|                 | calls \`posthog.startSessionRecording()\` (e.g. inside captureError).    |              |
+
+The agent's job:
+  1. ASK the user which strategy fits their app + storage tolerance.
+  2. Call \`agentry_configure_session_replay\` with the choice + retention.
+  3. For \`errors_only\`: also edit the customer's agentry helper (from the
+     install guide's drop_in_helper) to call \`posthog.startSessionRecording()\`
+     inside captureError. Recording starts on the next user error.
+
+Endpoints (api-key auth, project-scoped):
+- POST /v1/projects/:id/posthog/session-replay/configure
+    body: {strategy, sample_rate?, retention_days?, min_duration_ms?, url_triggers?}
+- GET  /v1/projects/:id/posthog/session-replay/status
+    returns the current config + \`web_ui_url\` deep-link into PostHog's
+    Replay tab for viewing recordings.
+
+Retention is controlled per-team via \`retention_days\` (30 / 90 / 365).
+Recordings older than this are deleted by PostHog automatically — no agentry
+cron required.
+
+Currently the agentry MCP can't retrieve recordings programmatically
+(\`session_recording:read\` scope isn't on the master Personal API Key).
+Until that's widened, use the \`web_ui_url\` returned by
+\`agentry_session_replay_status\` to view recordings in PostHog's browser UI.
+Once expanded, \`agentry_get_session_replays(case_id)\` will return playable
+URLs the agent can surface alongside cases for one-click debugging.
+
+## Feature flags / cohorts / surveys / A/B (PostHog) — available, MCP coming
+
+All of these are supported by the self-hosted PostHog stack agentry runs on,
+on every per-user team. They're accessible today via:
+
+  - **HogQL queries** through agentry_analytics_query — cohort-shaped queries
+    work fine, e.g. "users who completed signup but not checkout in 7 days".
+  - **PostHog's web UI** — your user logs in to posthog.agentry.sh, picks
+    their team from the project switcher, manages flags/cohorts/surveys
+    directly. Their team is created automatically by agentry; the api_token
+    matches the team's PostHog write key.
+
+Dedicated MCP tools (\`agentry_create_feature_flag\`, \`agentry_list_cohorts\`,
+\`agentry_create_survey\`, etc.) are pending one operator action: rotate the
+master PostHog Personal API Key to include all scopes (\`*\` or the explicit
+list: \`feature_flag:read,write\`, \`cohort:read,write\`, \`survey:read,write\`,
+\`session_recording:read\`). Default master keys are minted with a narrow
+scope. Once expanded, the MCP tools land in a follow-up release.
+
 ## Sourcemaps — server stores, agent translates
 
 Client-side errors arrive with minified stacks (\`at t.a (chunks/abc.js:1:1234)\`).
@@ -517,6 +576,8 @@ adds local-compute tools that don't exist on the API by design.
 | agentry_upload_sourcemap        | POST /v1/sourcemaps/:id/                  |
 | agentry_list_sourcemaps         | GET /v1/sourcemaps/:id/                   |
 | agentry_delete_sourcemaps       | DELETE /v1/sourcemaps/:id/                |
+| agentry_configure_session_replay | POST /v1/projects/:id/posthog/session-replay/configure |
+| agentry_session_replay_status   | GET /v1/projects/:id/posthog/session-replay/status |
 | agentry_list_event_names        | grouped list of analytics events seen     |
 | agentry_list_feedback           | feedback channel for agent-filed gaps     |
 | agentry_send_feedback           | file a missing-feature / friction report  |

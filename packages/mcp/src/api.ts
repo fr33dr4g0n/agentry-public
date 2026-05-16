@@ -110,12 +110,12 @@ export async function apiFetch<T>(
   const url = opts.absoluteUrl ?? `${cfg.server_url.replace(/\/$/, "")}${pathOrUrl}`;
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "user-agent": "agentry-mcp/0.0.9",
+    "user-agent": "agentry-mcp/0.0.10",
   };
   if (!opts.skipAuth) {
     if (opts.dsnAuth) {
       headers["x-sentry-auth"] =
-        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.9`;
+        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.10`;
     } else if (cfg.api_key) {
       headers["authorization"] = `Bearer ${cfg.api_key}`;
     }
@@ -227,6 +227,46 @@ export const api = {
       { body }
     );
   },
+  // PostHog per-user feature config: session replay today, more coming as
+  // master Personal API Key scopes expand.
+  configureSessionReplay(
+    cfg: AgentryConfig,
+    projectId: string,
+    body: {
+      strategy: "off" | "all" | "sampled" | "url_scoped" | "errors_only";
+      sample_rate?: number;
+      retention_days?: number;
+      min_duration_ms?: number;
+      url_triggers?: Array<{ url: string; matching?: "exact" | "regex" }>;
+    },
+  ): Promise<{
+    team_id: number;
+    strategy: string;
+    settings: Record<string, unknown>;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/posthog/session-replay/configure`,
+      { body },
+    );
+  },
+  getSessionReplayStatus(
+    cfg: AgentryConfig,
+    projectId: string,
+  ): Promise<{
+    team_id: number;
+    session_recording_opt_in: boolean | null;
+    session_recording_sample_rate: string | null;
+    session_recording_retention_period: string | null;
+    web_ui_url: string;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/posthog/session-replay/status`,
+    );
+  },
   // Idempotent recovery for first-login PostHog provisioning failures. If
   // PostHog was 503 at the moment the user logged in, the api_key was minted
   // but no analytics backend was attached → every /v1/track/ 503s with
@@ -303,7 +343,7 @@ export const api = {
       headers: {
         authorization: `Bearer ${publicKey}`,
         "content-type": "application/json",
-        "user-agent": "agentry-mcp/0.0.9",
+        "user-agent": "agentry-mcp/0.0.10",
       },
       body: opts.body,
     });

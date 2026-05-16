@@ -267,6 +267,75 @@ export async function forwardCapture(
 }
 
 // ---------------------------------------------------------------------------
+// Team settings — PATCH /api/environments/<team_id>/ on PostHog. Used to
+// toggle per-user session replay, retention, sampling, and similar per-team
+// preferences. Requires the master Personal API Key (org-admin scope).
+//
+// Why /api/environments/ not /api/projects/: PostHog is mid-migration from
+// team-centric to project-centric URLs. The team management endpoints live
+// at /api/environments/<team_id>/, while query execution is still
+// /api/projects/<team_id>/query/. Per-resource endpoint base.
+// ---------------------------------------------------------------------------
+
+export interface TeamSettings {
+  session_recording_opt_in?: boolean;
+  session_recording_retention_period?: string; // "30d", "90d", "1y", etc.
+  session_recording_sample_rate?: string;       // PostHog stores as string "0.1" = 10%
+  session_recording_minimum_duration_milliseconds?: number;
+  session_recording_url_trigger_config?: Array<{ url: string; matching: "regex" | "exact" }>;
+  session_recording_url_blocklist_config?: Array<{ url: string; matching: "regex" | "exact" }>;
+  session_recording_event_trigger_config?: string[];
+  capture_console_log_opt_in?: boolean;
+  autocapture_opt_out?: boolean;
+  heatmaps_opt_in?: boolean;
+  surveys_opt_in?: boolean;
+}
+
+export async function getTeamSettings(
+  env: Env,
+  userId: string,
+): Promise<{ teamId: number; settings: TeamSettings & Record<string, unknown> }> {
+  if (!isPosthogConfigured(env)) throw errors.internal("posthog not configured");
+  const ph = await getPosthogProjectForUser(env, userId);
+  if (!ph) throw errors.notFound("posthog_project");
+  const url = `${host(env)}/api/environments/${ph.posthogProjectId}/`;
+  const res = await withTimeout(
+    fetch(url, { headers: { authorization: `Bearer ${env.POSTHOG_MASTER_API_KEY}` } }),
+    POSTHOG_TIMEOUT_MS,
+  );
+  if (!res.ok) {
+    throw errors.internal(`PostHog GET team ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+  return { teamId: ph.posthogProjectId, settings: (await res.json()) as TeamSettings };
+}
+
+export async function updateTeamSettings(
+  env: Env,
+  userId: string,
+  patch: TeamSettings,
+): Promise<{ teamId: number; settings: TeamSettings & Record<string, unknown> }> {
+  if (!isPosthogConfigured(env)) throw errors.internal("posthog not configured");
+  const ph = await getPosthogProjectForUser(env, userId);
+  if (!ph) throw errors.notFound("posthog_project");
+  const url = `${host(env)}/api/environments/${ph.posthogProjectId}/`;
+  const res = await withTimeout(
+    fetch(url, {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${env.POSTHOG_MASTER_API_KEY}`,
+      },
+      body: JSON.stringify(patch),
+    }),
+    POSTHOG_TIMEOUT_MS,
+  );
+  if (!res.ok) {
+    throw errors.internal(`PostHog PATCH team ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+  return { teamId: ph.posthogProjectId, settings: (await res.json()) as TeamSettings };
+}
+
+// ---------------------------------------------------------------------------
 // HogQL passthrough. The per-user team_id is in the URL — PostHog's HogQL
 // compiler hardcodes `WHERE events.team_id = <team>` into every generated
 // ClickHouse query, AST-level. Cross-user isolation is structural; no regex,
