@@ -212,6 +212,14 @@ detail in the body.
 // installing anything. The MCP package is the accelerator; this doc is the
 // always-available reference. Keep these in sync — both describe the same
 // system from two angles.
+//
+// Split: /agentry.md = lean reference (always-relevant API + MCP surface).
+//        /agentry-install.md = install + ops handbook (12-step install flow,
+//        session replay, sourcemap deep dive, webhooks, recipes, privacy).
+// During day-to-day usage the agent only needs the lean reference; during
+// first-time install (or when configuring a new ops feature) it fetches
+// the install handbook on demand. Splitting prevents the install boilerplate
+// from bloating context after onboarding is done.
 const AGENTRY_MD = `# agentry
 
 Agent-first error monitoring + product analytics + deploy attribution.
@@ -220,6 +228,12 @@ any MCP-compatible client) investigates the data and writes the fixes.
 
 There is no SaaS dashboard. There is no SDK to install. The user's agent
 is the SDK.
+
+> **First time installing agentry?** ALSO fetch /agentry-install.md. It has
+> the 12-step install flow, session-replay strategies, sourcemap-upload
+> details, webhook templates, recipes catalog, and privacy-disclosure
+> snippets. This file is the lean day-to-day reference; the install doc is
+> only needed during onboarding or when wiring a new ops feature.
 
 ## Canonical principle: data plane vs. compute plane
 
@@ -251,18 +265,19 @@ claude mcp add agentry -- npx -y @agentrysh/mcp
 \`\`\`
 
 Then in your agent: *"set me up with agentry"*. The agent runs the GitHub
-device-code flow, mints an api key, provisions your PostHog project,
-creates an agentry project, fetches the comprehensive install guide for
-your stack, walks the 12-step install (errors + analytics + deploys, all
-three signal types in one pass), and runs agentry_verify_install at the
-end. You answer one batched check-in question; the agent does everything
-else.
+device-code flow, mints both an api key (\`agk_…\`) and a public-dashboard
+key (\`agp_…\`), provisions your PostHog project, creates an agentry project,
+fetches the comprehensive install guide for your stack, walks the 12-step
+install (errors + analytics + deploys, all three signal types in one pass),
+and runs agentry_verify_install at the end. The full step-by-step belongs
+to /agentry-install.md — fetch that file before starting the install.
 
 ## Two-prompt onboarding (without MCP, plain HTTP)
 
 If you can't or don't want to install the MCP: every step in the install
-flow is reachable via HTTP. The agent reads this doc + /v1/install/guide
-and drives curl directly. See the "API surface" section below.
+flow is reachable via HTTP. The agent reads this doc + /agentry-install.md
++ /v1/install/guide and drives curl directly. See the "API surface" section
+below.
 
 ## Signal types — three POSTs, one DSN
 
@@ -289,13 +304,265 @@ ALL outbound HTTP MUST set a custom \`user-agent\` header. Cloudflare's
 Browser Integrity Check 403s default Python-urllib / Java HttpClient UAs
 with CF error 1010. Helper code in agentry_install_guide always sets one.
 
+## Install flow (summary)
+
+agentry has no SDK by design. The agent generates a ~25-line fetch helper
+at install time and instruments errors + analytics + deploys in one pass.
+The full 12-step checklist (helper code, framework wiring, event inventory
+lens selection, sourcemap upload, privacy clause, verify-install) lives in
+/agentry-install.md. Fetch it when installing.
+
+## Cases — the bug primitive
+
+Multiple events with the same fingerprint collapse into one Case. Cases
+have status (open / investigating / resolved / spurious / ignored) and
+attribute to deploys via last_deploy_sha. The agent investigates cases by:
+
+- GET /v1/cases/:id → stack + breadcrumbs + recent_deploys + affected_users
+- If stack frames look minified, call **agentry_unmangle_stack** (MCP tool,
+  see "Sourcemaps" below) to translate locally
+- Cross-reference last_deploy_sha with recent_deploys[] to identify the
+  suspect deploy
+- git log + git blame from local_path to find the regression
+- Open a PR; PATCH /v1/cases/:id with status=resolved + summary + pr_url
+
+Suppress noise via POST /v1/projects/:id/suppressions — pattern + action
+(auto_ignore / auto_resolve / prompt_hint).
+
+For minified client-side stacks, call \`agentry_unmangle_stack(case_id)\` —
+it's an MCP-side compute tool that pulls each frame's .map from agentry's
+sourcemap blob endpoint and translates it locally via @jridgewell/trace-
+mapping. Sourcemap uploads, webhook plumbing, recipe runs, session-replay
+config and privacy disclosure all live in /agentry-install.md.
+
+## Three tokens, sharp blast radius each
+
+agentry uses three different token formats. They are NOT interchangeable.
+Knowing which one to ship where is the single most important security
+decision the agent makes during install.
+
+| Token                  | Format                       | Auths                                                                | Safe in SPA bundle? | Mint / rotate via              |
+|------------------------|------------------------------|----------------------------------------------------------------------|----------------------|--------------------------------|
+| Private API key        | \`agk_…\`                      | Every owner-side endpoint (cases, deploys, projects, mint DSNs, mint publications) | **NO** — server / agent only. | \`agentry_login\` / \`agentry_rotate_key\` |
+| Public dashboard key   | \`agp_…\`                      | ONLY \`GET /v1/public/q/<publication_id>?key=agp_…\` for publications you explicitly minted | YES — read-only, schema bounded by the recipe + params. | minted alongside \`agk_\` at first login |
+| Project DSN            | \`agnt_<projectId>.<token>\`   | ONLY the three ingest endpoints (\`/v1/logs/\`, \`/v1/analytics/\`, \`/v1/deploys/\`) for ONE project | YES — ingest-only, no readback. | \`agentry_create_project\` |
+
+**Blast radius if leaked:**
+
+- \`agk_\` leak → full account compromise. Rotate immediately via
+  \`agentry_rotate_key\` (revokes the old key).
+- \`agp_\` leak → visitors can re-fetch the publications you already chose
+  to publish. Nothing else. Revoke individual publications with
+  \`agentry_revoke_publication\` (no need to re-mint the key).
+- DSN leak → an attacker can forge events on that ONE project (no read,
+  no cross-project bleed). Rotate the project's DSN.
+
+**Where each goes:**
+
+- SPA / mobile bundle, public marketing site: **DSN** for ingest (errors,
+  analytics, deploy pings) + **\`agp_\`** for any embedded chart. Both are
+  meant to be shippable.
+- Dev machine (\`~/.agentry/config.json\` — written by MCP), CI secret store,
+  agent-driven webhooks: **\`agk_\`**. Nothing else.
+
+The publishable-query flow uses both: the agent runs a recipe + decides
+"this rendering is shareable" → calls \`agentry_publish_query\` with
+project_id + recipe_id + params. agentry returns a \`publication_id\` and
+an \`embeddable_url\` of the form
+\`https://api.agentry.sh/v1/public/q/<publication_id>?key=agp_…\` with open
+CORS — fetchable directly from any browser page. Anyone GET-ing that URL
+gets the recipe's rows. Revoke any time with \`agentry_revoke_publication\`.
+
+## API surface (complete)
+
+### Auth (no key required)
+
+- POST /v1/auth/device                            → start GitHub device flow
+- POST /v1/auth/device/poll   {device_code}       → poll for completion
+                                                    returns {api_key, public_api_key, public_api_key_prefix, user_id, github, posthog}
+
+### Auth (api-key required: \`Authorization: Bearer <agk_…>\`)
+
+- POST   /v1/auth/keys/rotate                     → mint new private key, revoke current
+- POST   /v1/projects                             → create project; returns DSN + helper URLs
+- GET    /v1/projects
+- GET    /v1/projects/:id
+- GET    /v1/projects/:id/cases?status=open
+- GET    /v1/cases/:id                            → case detail with recent_deploys
+- PATCH  /v1/cases/:id                            → update status / summary / pr_url
+- POST   /v1/cases/:id/runs                       → record agent investigation run
+- POST   /v1/projects/:id/suppressions
+- GET    /v1/projects/:id/suppressions
+- GET    /v1/projects/:id/deploys?limit=20&since=<unix>
+- POST   /v1/projects/:id/analytics/query         → HogQL (PostHog passthrough)
+- POST   /v1/projects/:id/webhooks                → register webhook
+- GET    /v1/projects/:id/webhooks
+- DELETE /v1/projects/:id/webhooks/:id
+- POST   /v1/projects/:id/public-queries          → mint a publication (returns publication_id + embeddable_url)
+- GET    /v1/projects/:id/public-queries          → list publications
+- DELETE /v1/projects/:id/public-queries/:pub_id  → revoke publication
+- POST   /v1/projects/:id/posthog/session-replay/configure  → set replay strategy
+- GET    /v1/projects/:id/posthog/session-replay/status     → current config + web UI URL
+- GET    /v1/projects/:id/feature-flags                     → list flags
+- POST   /v1/projects/:id/feature-flags                     → create flag
+- GET    /v1/projects/:id/feature-flags/:flag_id            → get flag
+- PATCH  /v1/projects/:id/feature-flags/:flag_id            → update flag
+- DELETE /v1/projects/:id/feature-flags/:flag_id            → soft-delete flag
+- GET    /v1/projects/:id/cohorts                           → list cohorts
+- POST   /v1/projects/:id/cohorts                           → create cohort
+- GET    /v1/projects/:id/cohorts/:cohort_id                → get cohort
+- DELETE /v1/projects/:id/cohorts/:cohort_id                → soft-delete cohort
+- GET    /v1/projects/:id/surveys                           → list surveys
+- POST   /v1/projects/:id/surveys                           → create survey
+- GET    /v1/projects/:id/surveys/:survey_id                → get survey
+- DELETE /v1/projects/:id/surveys/:survey_id                → delete survey
+- GET    /v1/projects/:id/session-replays                   → list recordings (filter by distinct_id/date)
+- GET    /v1/projects/:id/session-replays/:replay_id        → recording metadata + player URL
+
+### Public dashboard (no api key required; \`?key=agp_…\` only, open CORS)
+
+- GET /v1/public/q/:publication_id?key=agp_…     → execute bound recipe, return rows
+
+### DSN-authenticated (project-scoped, Bearer DSN or x-sentry-auth)
+
+- POST /v1/logs/:project_id/         → log/error ingest
+- POST /v1/analytics/:project_id/    → analytics event ingest
+- POST /v1/deploys/:project_id/      → deploy ingest
+- POST /v1/store/:project_id/        → Sentry-wire alias for /v1/logs/
+- POST /v1/track/:project_id/        → PostHog-shape alias for /v1/analytics/
+- POST /v1/log/:project_id/          → catch-all (auto-detect kind)
+- POST /v1/sourcemaps/:project_id/   → upload .map blob
+- GET  /v1/sourcemaps/:project_id/   → list
+- GET  /v1/sourcemaps/:project_id/blob   → fetch raw .map
+- DELETE /v1/sourcemaps/:project_id/?release_id=…
+
+### Discovery (no auth)
+
+- GET /                                          → service metadata
+- GET /agentry.md                                → this file (lean reference)
+- GET /agentry-install.md                        → install + ops handbook
+- GET /llms.txt                                  → alias of /agentry.md
+- GET /v1/install/guide?framework=…              → category-aware install checklist
+- GET /v1/install/sdk/{node,browser}             → fetch-helper snippet
+- GET /v1/recipes                                → analytics recipe catalog
+- GET /v1/docs/query                             → HogQL primer
+- GET /v1/docs/automation                        → webhook handler templates
+- GET /v1/privacy/disclosure?variant=…           → paste-ready policy clauses
+
+CORS is enabled on all DSN-authenticated ingest endpoints (Access-Control-
+Allow-Origin: *) since they're auth-scoped, and on /v1/public/q/* (which
+authenticates via the embedded \`agp_…\` token). Other endpoints reject
+browser origins — they're MCP-only.
+
+## MCP tool reference (when you have it installed)
+
+Every HTTP capability above has a corresponding MCP tool. The MCP also
+adds local-compute tools that don't exist on the API by design.
+
+| Tool                            | Wraps / does                              |
+|---------------------------------|-------------------------------------------|
+| agentry_status                  | local config state + suggested next action |
+| agentry_login                   | GitHub device flow — mints \`agk_\` + \`agp_\` keys |
+| agentry_rotate_key              | rotate private api key                    |
+| agentry_create_project          | POST /v1/projects                         |
+| agentry_publish_query           | POST /v1/projects/:id/public-queries — returns embeddable_url |
+| agentry_list_publications       | GET /v1/projects/:id/public-queries       |
+| agentry_revoke_publication      | DELETE /v1/projects/:id/public-queries/:pub_id |
+| agentry_list_projects           | GET /v1/projects                          |
+| agentry_list_cases              | GET /v1/projects/:id/cases                |
+| agentry_get_case                | GET /v1/cases/:id                         |
+| agentry_resolve_case            | PATCH /v1/cases/:id status=resolved       |
+| agentry_mark_spurious           | PATCH + optional suppression              |
+| agentry_record_suppression      | POST /v1/projects/:id/suppressions        |
+| agentry_unmangle_stack          | **LOCAL** — translates minified stack via @jridgewell/trace-mapping |
+| agentry_install_sdk             | GET /v1/install/sdk/{lang}                |
+| agentry_install_guide           | GET /v1/install/guide                     |
+| agentry_verify_install          | fires synthetic error/analytics/deploy events, reports OK/FAIL per signal |
+| agentry_capture_test_event      | POST /v1/store/ with a synthetic exception |
+| agentry_track_test_event        | POST /v1/track/ with a synthetic event    |
+| agentry_record_deploy           | POST /v1/deploys/                         |
+| agentry_list_deploys            | GET /v1/projects/:id/deploys              |
+| agentry_analytics_query         | POST /v1/projects/:id/analytics/query     |
+| agentry_list_recipes            | GET /v1/recipes                           |
+| agentry_run_recipe              | POST /v1/projects/:id/recipes/:id/run     |
+| agentry_query_docs              | GET /v1/docs/query                        |
+| agentry_automation_docs         | GET /v1/docs/automation                   |
+| agentry_suggested_next_steps    | composed recommendation based on local state |
+| agentry_project_health          | aggregated stats across recent events / cases |
+| agentry_remember / agentry_recall | agent-private notes file in ~/.agentry/ |
+| agentry_register_webhook        | POST /v1/projects/:id/webhooks            |
+| agentry_list_webhooks           | GET /v1/projects/:id/webhooks             |
+| agentry_delete_webhook          | DELETE /v1/projects/:id/webhooks/:id      |
+| agentry_test_webhook            | POST /v1/projects/:id/webhooks/:id/test   |
+| agentry_create_alert            | wraps webhook + filter for threshold-based alerts |
+| agentry_list_alerts             | GET alerts                                |
+| agentry_evaluate_alert          | LOCAL — runs alert filter against recent data |
+| agentry_delete_alert            | DELETE                                    |
+| agentry_upload_sourcemap        | POST /v1/sourcemaps/:id/                  |
+| agentry_list_sourcemaps         | GET /v1/sourcemaps/:id/                   |
+| agentry_delete_sourcemaps       | DELETE /v1/sourcemaps/:id/                |
+| agentry_configure_session_replay | POST /v1/projects/:id/posthog/session-replay/configure |
+| agentry_session_replay_status   | GET /v1/projects/:id/posthog/session-replay/status |
+| agentry_list_feature_flags      | GET /v1/projects/:id/feature-flags        |
+| agentry_get_feature_flag        | GET /v1/projects/:id/feature-flags/:id    |
+| agentry_create_feature_flag     | POST /v1/projects/:id/feature-flags       |
+| agentry_update_feature_flag     | PATCH /v1/projects/:id/feature-flags/:id  |
+| agentry_delete_feature_flag     | soft-delete a feature flag (PATCH deleted=true) |
+| agentry_list_cohorts            | GET /v1/projects/:id/cohorts              |
+| agentry_get_cohort              | GET /v1/projects/:id/cohorts/:id          |
+| agentry_create_cohort           | POST /v1/projects/:id/cohorts             |
+| agentry_delete_cohort           | soft-delete a cohort                      |
+| agentry_list_surveys            | GET /v1/projects/:id/surveys              |
+| agentry_get_survey              | GET /v1/projects/:id/surveys/:id          |
+| agentry_create_survey           | POST /v1/projects/:id/surveys             |
+| agentry_delete_survey           | DELETE /v1/projects/:id/surveys/:id       |
+| agentry_list_session_replays    | GET /v1/projects/:id/session-replays (filter by distinct_id / date) |
+| agentry_get_session_replay      | GET /v1/projects/:id/session-replays/:id (returns player_url) |
+| agentry_list_event_names        | grouped list of analytics events seen     |
+| agentry_list_feedback           | feedback channel for agent-filed gaps     |
+| agentry_send_feedback           | file a missing-feature / friction report  |
+
+## Errors
+
+Every error response has the same envelope:
+
+\`\`\`json
+{"error": {"code": "...", "message": "...", "next_action": "..."}}
+\`\`\`
+
+Codes include: invalid_payload, unauthorized, invalid_api_key, invalid_dsn,
+not_found, forbidden, rate_limited, payload_too_large, posthog_capture_failed,
+analytics_not_configured, internal.
+
+The \`next_action\` field is what the agent should do next — read it; don't
+fall back to your own retry guess.
+
+## Where to read the source
+
+- HTTP API (the data plane): code lives in agentry-public on GitHub. Audit
+  every transformation by reading apps/api/src/.
+- MCP (the data plane wrapper + local compute): @agentrysh/mcp on npm, with
+  source mirrored to agentry-public. Read ~/.npm/_npx/.../@agentrysh/mcp/
+  dist/tools.js for the exact code your agent runs.
+
+No magic. Everything that runs is text you can grep.
+`;
+
+// Install + ops handbook. Fetched on demand during first-time setup and
+// when configuring a new ops feature (session replay, webhooks, sourcemap
+// upload). Split out from /agentry.md so the lean reference can stay
+// resident in agent context without dragging install boilerplate along.
+const AGENTRY_INSTALL_MD = `# agentry — install & ops handbook
+
+This is the deep companion to /agentry.md. Fetch it once at install time
+and again only when configuring a new ops feature (sourcemaps, session
+replay, webhooks). Day-to-day tool calls don't need this file in context.
+
+agentry has no SDK by design. The agent generates a ~25-line fetch helper
+at install time, tuned to the stack, and instruments errors + analytics +
+deploys in ONE pass — NOT three separate sessions.
+
 ## The install flow (12 steps, run by the agent)
-
-agentry has no SDK by design. The agent generates a 25-line fetch helper
-at install time, tuned to the stack. Then it instruments errors, analytics,
-and deploys in one pass — NOT three separate sessions.
-
-Agent flow:
 
 1. \`investigate_app_structure\` — read the repo. Pick a product category
    (SaaS / e-commerce / marketplace / content-media / dev-tool / games /
@@ -315,6 +582,7 @@ Agent flow:
 
 5. \`drop_in_helper\` — paste the ~25-line fetch helper into src/lib/agentry.
    The helper has agentry.send("logs"|"analytics"|"deploys", payload).
+   Source: GET /v1/install/sdk/{node,browser} for paste-ready snippets.
 
 6. **REQUIRED** \`wire_errors\` — framework-level error handler forwarding
    uncaught exceptions to agentry.send("logs", exc).
@@ -345,22 +613,31 @@ the install where it asks a question — confirms inventory coverage, flags
 ambiguities). Then \`suggest_next_builds\` proposes 3–5 dashboards /
 automations tailored to the actual event inventory.
 
-## Cases — the bug primitive
+## Sourcemaps — server stores, agent translates
 
-Multiple events with the same fingerprint collapse into one Case. Cases
-have status (open / investigating / resolved / spurious / ignored) and
-attribute to deploys via last_deploy_sha. The agent investigates cases by:
+Client-side errors arrive with minified stacks (\`at t.a (chunks/abc.js:1:1234)\`).
+The agent translates them LOCALLY using sourcemaps stored on agentry.
 
-- GET /v1/cases/:id → stack + breadcrumbs + recent_deploys + affected_users
-- If stack frames look minified, call **agentry_unmangle_stack** (MCP tool,
-  see "Sourcemaps" below) to translate locally
-- Cross-reference last_deploy_sha with recent_deploys[] to identify the
-  suspect deploy
-- git log + git blame from local_path to find the regression
-- Open a PR; PATCH /v1/cases/:id with status=resolved + summary + pr_url
+Storage (data plane, HTTP API):
 
-Suppress noise via POST /v1/projects/:id/suppressions — pattern + action
-(auto_ignore / auto_resolve / prompt_hint).
+- POST   /v1/sourcemaps/{project_id}/?release_id=<sha>&source_url=<path>
+  Body: raw .map JSON. Auth: Bearer DSN. Stores in R2 keyed by the tuple.
+- GET    /v1/sourcemaps/{project_id}/?release_id=<sha>   → list uploads
+- GET    /v1/sourcemaps/{project_id}/blob?release_id=<sha>&source_url=<path>
+  → returns raw .map JSON, ready to feed to a source-map library
+- DELETE /v1/sourcemaps/{project_id}/?release_id=<sha>   → clean up old release
+
+Translation (compute plane, MCP-only):
+
+- \`agentry_unmangle_stack(case_id)\` → fetches every minified frame's .map
+  via the blob endpoint, runs @jridgewell/trace-mapping (open source, on
+  npm) locally in the MCP process, returns translated frames + the exact
+  4-line code snippet that produced them + the library version. Reproducible
+  offline.
+
+Translation NEVER runs on the server. The agent (or you) can verify by
+reading ~/.npm/_npx/<hash>/node_modules/@agentrysh/mcp/dist/tools.js — the
+unmangle handler is right there.
 
 ## Session replay (PostHog) — OPT-IN, agent-driven strategy
 
@@ -402,50 +679,73 @@ Until that's widened, use the \`web_ui_url\` returned by
 Once expanded, \`agentry_get_session_replays(case_id)\` will return playable
 URLs the agent can surface alongside cases for one-click debugging.
 
-## Feature flags / cohorts / surveys / A/B (PostHog) — available, MCP coming
+## Feature flags / cohorts / surveys / A/B testing (PostHog)
 
-All of these are supported by the self-hosted PostHog stack agentry runs on,
-on every per-user team. They're accessible today via:
+Full PostHog feature parity on every per-user team. As of 2026-05-15, all
+of these have dedicated MCP tools — the master Personal API Key has \`*\`
+scope so the agent can list / create / update / delete each resource
+directly without dropping to the web UI.
 
-  - **HogQL queries** through agentry_analytics_query — cohort-shaped queries
-    work fine, e.g. "users who completed signup but not checkout in 7 days".
-  - **PostHog's web UI** — your user logs in to posthog.agentry.sh, picks
-    their team from the project switcher, manages flags/cohorts/surveys
-    directly. Their team is created automatically by agentry; the api_token
-    matches the team's PostHog write key.
+### Feature flags
 
-Dedicated MCP tools (\`agentry_create_feature_flag\`, \`agentry_list_cohorts\`,
-\`agentry_create_survey\`, etc.) are pending one operator action: rotate the
-master PostHog Personal API Key to include all scopes (\`*\` or the explicit
-list: \`feature_flag:read,write\`, \`cohort:read,write\`, \`survey:read,write\`,
-\`session_recording:read\`). Default master keys are minted with a narrow
-scope. Once expanded, the MCP tools land in a follow-up release.
+| Tool                            | What it does                                                                  |
+|---------------------------------|-------------------------------------------------------------------------------|
+| \`agentry_list_feature_flags\`    | List all flags on the project. Each has \`id\`, \`key\`, \`name\`, \`active\`, \`filters\`. |
+| \`agentry_get_feature_flag\`      | Full configuration for one flag (filters, variants, conditions).              |
+| \`agentry_create_feature_flag\`   | Simple shape: \`{key, name?, active?, rollout_percentage?}\`. Advanced: pass full \`filters\` for property-targeted / multivariate / cohort-scoped flags. |
+| \`agentry_update_feature_flag\`   | Patch \`active\`, \`name\`, \`rollout_percentage\`, or \`filters\`.               |
+| \`agentry_delete_feature_flag\`   | Soft-delete (recoverable in PostHog's web UI).                                |
 
-## Sourcemaps — server stores, agent translates
+Reading the flag value in customer code uses PostHog's standard SDKs
+(\`posthog.isFeatureEnabled('key')\`, \`posthog.getFeatureFlag('key')\`).
+agentry doesn't ship a feature-flag evaluation client — the customer's
+PostHog-JS / Python / Node SDK does the work, talking to their per-user
+team's PostHog endpoint.
 
-Client-side errors arrive with minified stacks (\`at t.a (chunks/abc.js:1:1234)\`).
-The agent translates them LOCALLY using sourcemaps stored on agentry.
+### Cohorts
 
-Storage (data plane, HTTP API):
+| Tool                    | What it does                                                       |
+|-------------------------|--------------------------------------------------------------------|
+| \`agentry_list_cohorts\`  | List cohorts (dynamic user segments).                              |
+| \`agentry_get_cohort\`    | One cohort's filter + last calculation + count.                    |
+| \`agentry_create_cohort\` | Simple: \`{name, event, days?}\` — users who fired \`event\` in last N days. Advanced: \`{name, groups: [...PostHog filter format]}\`. |
+| \`agentry_delete_cohort\` | Soft-delete.                                                       |
 
-- POST   /v1/sourcemaps/{project_id}/?release_id=<sha>&source_url=<path>
-  Body: raw .map JSON. Auth: Bearer DSN. Stores in R2 keyed by the tuple.
-- GET    /v1/sourcemaps/{project_id}/?release_id=<sha>   → list uploads
-- GET    /v1/sourcemaps/{project_id}/blob?release_id=<sha>&source_url=<path>
-  → returns raw .map JSON, ready to feed to a source-map library
-- DELETE /v1/sourcemaps/{project_id}/?release_id=<sha>   → clean up old release
+Cohorts compose with feature flags (target a rollout to a cohort) and
+HogQL (\`SELECT … WHERE person_id IN (SELECT person_id FROM cohort_people
+WHERE cohort_id = N)\`).
 
-Translation (compute plane, MCP-only):
+### Surveys
 
-- \`agentry_unmangle_stack(case_id)\` → fetches every minified frame's .map
-  via the blob endpoint, runs @jridgewell/trace-mapping (open source, on
-  npm) locally in the MCP process, returns translated frames + the exact
-  4-line code snippet that produced them + the library version. Reproducible
-  offline.
+| Tool                    | What it does                                                                   |
+|-------------------------|--------------------------------------------------------------------------------|
+| \`agentry_list_surveys\`  | List surveys (NPS, CSAT, custom popups).                                       |
+| \`agentry_get_survey\`    | One survey's definition + appearance config + linked flag.                     |
+| \`agentry_create_survey\` | Quick: \`{name, question, question_type?}\` for single-question popover. Multi: \`{name, questions: [...]}\`. Created in draft — pass \`start_date\` (ISO) to launch immediately. |
+| \`agentry_delete_survey\` | Hard-delete.                                                                   |
 
-Translation NEVER runs on the server. The agent (or you) can verify by
-reading ~/.npm/_npx/<hash>/node_modules/@agentrysh/mcp/dist/tools.js — the
-unmangle handler is right there.
+Responses land as \`survey sent\` events. To read them:
+
+\`\`\`sql
+SELECT properties.\\$survey_response, properties.\\$survey_iteration
+FROM events
+WHERE event = 'survey sent' AND properties.\\$survey_id = '<id>'
+ORDER BY timestamp DESC
+\`\`\`
+
+### Session replay retrieval
+
+Once replay is enabled (via \`agentry_configure_session_replay\`), use
+these to find and inspect recordings:
+
+| Tool                            | What it does                                                                                |
+|---------------------------------|---------------------------------------------------------------------------------------------|
+| \`agentry_list_session_replays\`  | Filter by \`distinct_id\` (the user from a case's affected_users), \`date_from\`, \`date_to\`. |
+| \`agentry_get_session_replay\`    | Returns \`player_url\` — open in browser to watch. Snapshot bytes via curl + master key if you want to inspect DOM events programmatically. |
+
+Killer workflow: when investigating an error, grab \`affected_users[].distinct_id\`
+from \`agentry_get_case\`, pass it to \`agentry_list_session_replays\`, and
+the player URL of the recording leading up to the error is one tool call away.
 
 ## Webhooks — push events to your code
 
@@ -477,110 +777,15 @@ When no recipe matches, the agent composes HogQL directly:
 - POST /v1/projects/:project_id/analytics/query  {query: "<HogQL>"}
 - GET  /v1/docs/query   → HogQL primer (schema, common patterns)
 
-## API surface (complete)
+## Public dashboards — publish a recipe with the \`agp_\` key
 
-### Auth (no key required)
-
-- POST /v1/auth/device                            → start GitHub device flow
-- POST /v1/auth/device/poll   {device_code}       → poll for completion
-                                                    returns {api_key, user_id, github, posthog}
-
-### Auth (api-key required: \`Authorization: Bearer <agk_…>\`)
-
-- POST   /v1/auth/keys/rotate                     → mint new key, revoke current
-- POST   /v1/projects                             → create project; returns DSN + helper URLs
-- GET    /v1/projects
-- GET    /v1/projects/:id
-- GET    /v1/projects/:id/cases?status=open
-- GET    /v1/cases/:id                            → case detail with recent_deploys
-- PATCH  /v1/cases/:id                            → update status / summary / pr_url
-- POST   /v1/cases/:id/runs                       → record agent investigation run
-- POST   /v1/projects/:id/suppressions
-- GET    /v1/projects/:id/suppressions
-- GET    /v1/projects/:id/deploys?limit=20&since=<unix>
-- POST   /v1/projects/:id/analytics/query         → HogQL (PostHog passthrough)
-- POST   /v1/projects/:id/webhooks                → register webhook
-- GET    /v1/projects/:id/webhooks
-- DELETE /v1/projects/:id/webhooks/:id
-
-### DSN-authenticated (project-scoped, Bearer DSN or x-sentry-auth)
-
-- POST /v1/logs/:project_id/         → log/error ingest
-- POST /v1/analytics/:project_id/    → analytics event ingest
-- POST /v1/deploys/:project_id/      → deploy ingest
-- POST /v1/store/:project_id/        → Sentry-wire alias for /v1/logs/
-- POST /v1/track/:project_id/        → PostHog-shape alias for /v1/analytics/
-- POST /v1/log/:project_id/          → catch-all (auto-detect kind)
-- POST /v1/sourcemaps/:project_id/   → upload .map blob
-- GET  /v1/sourcemaps/:project_id/   → list
-- GET  /v1/sourcemaps/:project_id/blob   → fetch raw .map
-- DELETE /v1/sourcemaps/:project_id/?release_id=…
-
-### Discovery (no auth)
-
-- GET /                                          → service metadata
-- GET /agentry.md                                → this file
-- GET /llms.txt                                  → alias of /agentry.md
-- GET /v1/install/guide?framework=…              → category-aware install checklist
-- GET /v1/install/sdk/{node,browser}             → fetch-helper snippet
-- GET /v1/recipes                                → analytics recipe catalog
-- GET /v1/docs/query                             → HogQL primer
-- GET /v1/docs/automation                        → webhook handler templates
-- GET /v1/privacy/disclosure?variant=…           → paste-ready policy clauses
-
-CORS is enabled on all DSN-authenticated ingest endpoints (Access-Control-
-Allow-Origin: *) since they're auth-scoped. Other endpoints reject browser
-origins — they're MCP-only.
-
-## MCP tool reference (when you have it installed)
-
-Every HTTP capability above has a corresponding MCP tool. The MCP also
-adds local-compute tools that don't exist on the API by design.
-
-| Tool                            | Wraps / does                              |
-|---------------------------------|-------------------------------------------|
-| agentry_status                  | local config state + suggested next action |
-| agentry_login                   | GitHub device flow                        |
-| agentry_rotate_key              | rotate api key                            |
-| agentry_create_project          | POST /v1/projects                         |
-| agentry_list_projects           | GET /v1/projects                          |
-| agentry_list_cases              | GET /v1/projects/:id/cases                |
-| agentry_get_case                | GET /v1/cases/:id                         |
-| agentry_resolve_case            | PATCH /v1/cases/:id status=resolved       |
-| agentry_mark_spurious           | PATCH + optional suppression              |
-| agentry_record_suppression      | POST /v1/projects/:id/suppressions        |
-| agentry_unmangle_stack          | **LOCAL** — translates minified stack via @jridgewell/trace-mapping |
-| agentry_install_sdk             | GET /v1/install/sdk/{lang}                |
-| agentry_install_guide           | GET /v1/install/guide                     |
-| agentry_verify_install          | fires synthetic error/analytics/deploy events, reports OK/FAIL per signal |
-| agentry_capture_test_event      | POST /v1/store/ with a synthetic exception |
-| agentry_track_test_event        | POST /v1/track/ with a synthetic event    |
-| agentry_record_deploy           | POST /v1/deploys/                         |
-| agentry_list_deploys            | GET /v1/projects/:id/deploys              |
-| agentry_analytics_query         | POST /v1/projects/:id/analytics/query     |
-| agentry_list_recipes            | GET /v1/recipes                           |
-| agentry_run_recipe              | POST /v1/projects/:id/recipes/:id/run     |
-| agentry_query_docs              | GET /v1/docs/query                        |
-| agentry_automation_docs         | GET /v1/docs/automation                   |
-| agentry_suggested_next_steps    | composed recommendation based on local state |
-| agentry_project_health          | aggregated stats across recent events / cases |
-| agentry_remember / agentry_recall | agent-private notes file in ~/.agentry/ |
-| agentry_register_webhook        | POST /v1/projects/:id/webhooks            |
-| agentry_list_webhooks           | GET /v1/projects/:id/webhooks             |
-| agentry_delete_webhook          | DELETE /v1/projects/:id/webhooks/:id      |
-| agentry_test_webhook            | POST /v1/projects/:id/webhooks/:id/test   |
-| agentry_create_alert            | wraps webhook + filter for threshold-based alerts |
-| agentry_list_alerts             | GET alerts                                |
-| agentry_evaluate_alert          | LOCAL — runs alert filter against recent data |
-| agentry_delete_alert            | DELETE                                    |
-| agentry_upload_sourcemap        | POST /v1/sourcemaps/:id/                  |
-| agentry_list_sourcemaps         | GET /v1/sourcemaps/:id/                   |
-| agentry_delete_sourcemaps       | DELETE /v1/sourcemaps/:id/                |
-| agentry_configure_session_replay | POST /v1/projects/:id/posthog/session-replay/configure |
-| agentry_session_replay_status   | GET /v1/projects/:id/posthog/session-replay/status |
-| agentry_list_event_names        | grouped list of analytics events seen     |
-| agentry_list_feedback           | feedback channel for agent-filed gaps     |
-| agentry_send_feedback           | file a missing-feature / friction report  |
+Use \`agentry_publish_query\` to bind a (recipe, params) tuple to a
+publication_id. The returned \`embeddable_url\` (form
+\`https://api.agentry.sh/v1/public/q/<publication_id>?key=agp_…\`) is safe
+to drop into a public marketing site or status page — open CORS, no
+\`Authorization\` header needed. The \`agp_…\` token only authenticates that
+endpoint; visitors can't reach cases, deploys, raw events, or arbitrary
+HogQL. Revoke any time with \`agentry_revoke_publication\`.
 
 ## Privacy disclosure
 
@@ -589,30 +794,11 @@ adds local-compute tools that don't exist on the API by design.
   privacy policy. agentry.sh is the canonical link; customers' policies pointing
   here serve as honest backlinks.
 
-## Errors
+## Back to the lean reference
 
-Every error response has the same envelope:
-
-\`\`\`json
-{"error": {"code": "...", "message": "...", "next_action": "..."}}
-\`\`\`
-
-Codes include: invalid_payload, unauthorized, invalid_api_key, invalid_dsn,
-not_found, forbidden, rate_limited, payload_too_large, posthog_capture_failed,
-analytics_not_configured, internal.
-
-The \`next_action\` field is what the agent should do next — read it; don't
-fall back to your own retry guess.
-
-## Where to read the source
-
-- HTTP API (the data plane): code lives in agentry-public on GitHub. Audit
-  every transformation by reading apps/api/src/.
-- MCP (the data plane wrapper + local compute): @agentrysh/mcp on npm, with
-  source mirrored to agentry-public. Read ~/.npm/_npx/.../@agentrysh/mcp/
-  dist/tools.js for the exact code your agent runs.
-
-No magic. Everything that runs is text you can grep.
+When install is done, day-to-day usage only needs /agentry.md — it has the
+full API surface, MCP tool table, and case-investigation flow without
+dragging this install boilerplate along.
 `;
 
 router.get("/", (c) => {
@@ -620,18 +806,25 @@ router.get("/", (c) => {
     name: "agentry",
     version: "0.0.0",
     docs: "/agentry.md",
+    install_docs: "/agentry-install.md",
     next_action:
-      "Read /agentry.md for the full capability surface. Then install the MCP " +
-      "for stateful tooling (`claude mcp add agentry -- npx -y @agentrysh/mcp`) " +
-      "OR drive everything via plain HTTP using the API surface in the doc.",
+      "Read /agentry.md for the day-to-day API + MCP reference. If installing " +
+      "agentry for the first time, ALSO fetch /agentry-install.md for the " +
+      "12-step setup checklist + ops handbook. Then install the MCP for stateful " +
+      "tooling (`claude mcp add agentry -- npx -y @agentrysh/mcp`) OR drive " +
+      "everything via plain HTTP using the API surface in the doc.",
   });
 });
 
-// /agentry.md is the canonical agent-readable reference. /llms.txt is kept as
-// a back-compat alias serving the same content (the convention name some
-// agents look for by default).
+// /agentry.md is the canonical agent-readable reference. /agentry-install.md
+// is the install + ops handbook companion (separate file so day-to-day context
+// stays lean). /llms.txt is kept as a back-compat alias for the lean reference
+// (the convention name some agents look for by default).
 router.get("/agentry.md", (c) => {
   return c.text(AGENTRY_MD, 200, { "content-type": "text/markdown; charset=utf-8" });
+});
+router.get("/agentry-install.md", (c) => {
+  return c.text(AGENTRY_INSTALL_MD, 200, { "content-type": "text/markdown; charset=utf-8" });
 });
 router.get("/llms.txt", (c) => {
   return c.text(AGENTRY_MD, 200, { "content-type": "text/plain; charset=utf-8" });

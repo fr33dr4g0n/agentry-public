@@ -388,3 +388,75 @@ export async function runHogQl(
     types: json.types ?? null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Generic per-user-team resource CRUD against PostHog's REST API.
+//
+// All of these use POSTHOG_MASTER_API_KEY for authn but scope to the user's
+// team via the URL path. PostHog enforces team-level isolation natively —
+// the master key can hit any team_id, but we always derive the team_id from
+// the agentry user_id via getPosthogProjectForUser. No cross-tenant leakage.
+//
+// Used by: feature_flags, cohorts, surveys, session_recordings routes.
+// Requires the master Personal API Key to have the matching scope
+// (`feature_flag:read,write`, etc.) — rotated 2026-05-15.
+// ---------------------------------------------------------------------------
+
+interface PosthogReqOpts {
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  query?: Record<string, string | number | undefined>;
+  body?: unknown;
+}
+
+/** Call a per-team PostHog resource endpoint as the master key.
+ *  `pathSuffix` is appended after `/api/projects/<team_id>/` — e.g.
+ *  `"feature_flags/"` or `"feature_flags/42/"`. */
+export async function posthogTeamApi<T = unknown>(
+  env: Env,
+  userId: string,
+  pathSuffix: string,
+  opts: PosthogReqOpts = {},
+): Promise<{ teamId: number; status: number; data: T }> {
+  if (!isPosthogConfigured(env)) throw errors.internal("posthog not configured");
+  const ph = await getPosthogProjectForUser(env, userId);
+  if (!ph) throw errors.notFound("posthog_project");
+
+  const qs =
+    opts.query && Object.keys(opts.query).length
+      ? "?" +
+        Object.entries(opts.query)
+          .filter(([, v]) => v !== undefined)
+          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+          .join("&")
+      : "";
+
+  const url = `${host(env)}/api/projects/${ph.posthogProjectId}/${pathSuffix.replace(/^\//, "")}${qs}`;
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${env.POSTHOG_MASTER_API_KEY}`,
+  };
+  let body: string | undefined;
+  if (opts.body !== undefined) {
+    headers["content-type"] = "application/json";
+    body = JSON.stringify(opts.body);
+  }
+  const res = await withTimeout(
+    fetch(url, { method: opts.method ?? "GET", headers, body }),
+    POSTHOG_TIMEOUT_MS,
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    // Surface PostHog's own error message — it's clearer than a generic 5xx.
+    throw errors.internal(
+      `PostHog ${opts.method ?? "GET"} ${pathSuffix} ${res.status}: ${text.slice(0, 400)}`,
+    );
+  }
+  // 204 No Content (DELETE) returns empty body.
+  const data = text ? (JSON.parse(text) as T) : (undefined as unknown as T);
+  return { teamId: ph.posthogProjectId, status: res.status, data };
+}
+
+/** Deep-link helper for PostHog's web UI per-resource page. The agent
+ *  surfaces these alongside tool results so the user can click through. */
+export function posthogWebUrl(env: Env, teamId: number, resourcePath: string): string {
+  return `${host(env)}/project/${teamId}/${resourcePath.replace(/^\//, "")}`;
+}

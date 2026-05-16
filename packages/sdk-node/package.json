@@ -22,7 +22,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentry/shared": "*"
+    "@agentrysh/shared": "*"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

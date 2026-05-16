@@ -3,8 +3,10 @@ import { eq, sql } from "drizzle-orm";
 import { cases, deploys, events, webhooks } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey, requireProjectAccess } from "../middleware.js";
-import { FREE_TIER_CAPS, periodFor, readUsage } from "../usage.js";
+import { periodFor, readUsage, readUserUsage } from "../usage.js";
+import { planFor } from "../plans.js";
 import type { AppBindings } from "../env.js";
+import type { User } from "@agentry/db/schema";
 
 const router = new Hono<AppBindings>();
 
@@ -44,8 +46,18 @@ router.get("/v1/projects/:project_id/health", requireApiKey(), async (c) => {
     last_fired_at: w.lastFiredAt,
   }));
 
-  const usage = await readUsage(c.env, projectId);
+  const projectUsage = await readUsage(c.env, projectId);
   const period = periodFor();
+
+  // Plan limits apply per-user across all their projects, so the cap and pct
+  // shown here reflect the *account total*, not just this project's slice.
+  const user = c.get("user") as User;
+  const accountUsage = await readUserUsage(c.env, user.id, period);
+  const plan = planFor(user.plan);
+  const accountPct =
+    plan.monthlyEvents > 0
+      ? Math.round((accountUsage.totalEvents / plan.monthlyEvents) * 100)
+      : 0;
 
   const lastEventAt = lastEventRow?.ts ?? null;
   const lastDeployAt = lastDeployRow?.ts ?? null;
@@ -61,16 +73,32 @@ router.get("/v1/projects/:project_id/health", requireApiKey(), async (c) => {
     events_last_hour: Number(eventsLastHourRow?.c ?? 0),
     usage_this_month: {
       period,
-      errors: { count: usage.errors, cap: FREE_TIER_CAPS.errors, pct: Math.round((usage.errors / FREE_TIER_CAPS.errors) * 100) },
-      analytics: { count: usage.analytics, cap: FREE_TIER_CAPS.analytics, pct: Math.round((usage.analytics / FREE_TIER_CAPS.analytics) * 100) },
-      deploys: { count: usage.deploys, cap: FREE_TIER_CAPS.deploys, pct: Math.round((usage.deploys / FREE_TIER_CAPS.deploys) * 100) },
+      project: {
+        errors: projectUsage.errors,
+        analytics: projectUsage.analytics,
+        deploys: projectUsage.deploys,
+        total: projectUsage.errors + projectUsage.analytics + projectUsage.deploys,
+      },
+      account: {
+        plan: plan.id,
+        plan_name: plan.name,
+        monthly_event_cap: plan.monthlyEvents,
+        retention_days: plan.retentionDays,
+        total_events: accountUsage.totalEvents,
+        pct_of_plan: accountPct,
+        breakdown: {
+          errors: accountUsage.errors,
+          analytics: accountUsage.analytics,
+          deploys: accountUsage.deploys,
+        },
+      },
     },
     webhooks: webhookHealth,
     next_action:
       stalenessSeconds !== null && stalenessSeconds > 3600
         ? "⚠ No events received in over an hour. Check that the SDK is initialized and AGENTRY_DSN is set in the running app."
-        : usage.errors / FREE_TIER_CAPS.errors > 0.8 || usage.analytics / FREE_TIER_CAPS.analytics > 0.8
-        ? "⚠ Approaching free-tier cap. Review usage_this_month.*.pct and consider suppression rules or upgrading."
+        : accountPct > 80
+        ? `⚠ At ${accountPct}% of your ${plan.name} plan's monthly event cap. Review usage or consider upgrading.`
         : "Healthy. Use this endpoint as a regular heartbeat from CI / cron.",
   });
 });

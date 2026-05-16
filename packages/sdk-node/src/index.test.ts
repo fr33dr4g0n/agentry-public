@@ -3,7 +3,7 @@ import { AgentryClient } from "./client.js";
 import { buildEventPayload } from "./payload.js";
 import { parseStack } from "./stack.js";
 
-// Realistic-shaped DSN; matches `agnt_<projectId>.<token>` format from @agentry/shared.
+// Realistic-shaped DSN; matches `agnt_<projectId>.<token>` format from @agentrysh/shared.
 const DSN = "agnt_proj-abc-123.tok_secrettoken_456";
 const PROJECT_ID = "proj-abc-123";
 const SERVER_URL = "https://ingest.test";

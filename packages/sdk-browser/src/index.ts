@@ -4,7 +4,7 @@ import type { CaptureContext } from "./payload.js";
 export { BrowserAgentryClient } from "./client.js";
 export type { InitOptions, TrackOptions, UserContext } from "./client.js";
 export type { CaptureContext } from "./payload.js";
-export type { IngestEventPayload, StackFrame } from "@agentry/shared";
+export type { IngestEventPayload, StackFrame } from "@agentrysh/shared";
 
 const client = new BrowserAgentryClient();
 

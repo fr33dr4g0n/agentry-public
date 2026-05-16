@@ -19,14 +19,16 @@ import {
   parseDsn,
   sha256Hex,
   uuidv7,
-} from "@agentry/shared";
-import type { StackFrame } from "@agentry/shared";
+} from "@agentrysh/shared";
+import type { StackFrame } from "@agentrysh/shared";
 import { cases, deploys, events, projects, suppressionEntries } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { matchesPattern } from "./cases.js";
 import { forwardCapture, isPosthogConfigured } from "../posthog.js";
 import { fireWebhooks } from "../webhooks.js";
 import { incrementUsage } from "../usage.js";
+import { waitUntilOf } from "../middleware.js";
+import { coerceErrorBody } from "../error-coerce.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -273,8 +275,7 @@ async function handleErrorSignal(
   await incrementUsage(c.env, projectId, "errors");
 
   if (isNewCase) {
-    const waitUntil = (p: Promise<unknown>) =>
-      c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
+    const waitUntil = waitUntilOf(c);
     await fireWebhooks(
       c.env,
       projectId,
@@ -317,18 +318,28 @@ async function handleDeploySignal(
   const message = typeof b.message === "string" ? b.message.slice(0, 4000) : null;
   const url = typeof b.url === "string" ? b.url.slice(0, 500) : null;
   const actor = typeof b.actor === "string" ? b.actor.slice(0, 200) : null;
+  const extraJson = pickDeployExtras(b);
   await db.insert(deploys).values({
-    id, projectId, sha, branch, environment, message, url, actor, receivedAt: now,
+    id, projectId, sha, branch, environment, message, url, actor, extraJson, receivedAt: now,
   });
   await incrementUsage(c.env, projectId, "deploys");
 
-  const waitUntil = (p: Promise<unknown>) =>
-    c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
+  const waitUntil = waitUntilOf(c);
   await fireWebhooks(
     c.env,
     projectId,
     "deploy.recorded",
-    { deploy_id: id, sha, branch, environment, message, url, actor, received_at: now },
+    {
+      deploy_id: id,
+      sha,
+      branch,
+      environment,
+      message,
+      url,
+      actor,
+      extra: extraJson ? safeParseDeployExtras(extraJson) : null,
+      received_at: now,
+    },
     { waitUntil },
   );
 
@@ -391,6 +402,23 @@ async function handleEventSignal(
       502,
     );
   }
+
+  // Fire webhooks subscribed to this event name (or "*" / matching wildcard).
+  // Fire-and-forget so analytics ingest stays fast.
+  const waitUntil = waitUntilOf(c);
+  await fireWebhooks(
+    c.env,
+    projectId,
+    event,
+    {
+      event,
+      distinct_id,
+      properties,
+      timestamp: typeof b.timestamp === "number" ? b.timestamp : Math.floor(Date.now() / 1000),
+    },
+    { waitUntil },
+  );
+
   return c.json({
     detected_kind: "event" as const,
     event,
@@ -398,76 +426,6 @@ async function handleEventSignal(
     next_action:
       "Event forwarded to PostHog. Use agentry_analytics_query (or the PostHog UI) to verify it landed.",
   });
-}
-
-// ---------------------------------------------------------------------------
-// Coercion helpers
-// ---------------------------------------------------------------------------
-
-function coerceErrorBody(body: unknown): Record<string, unknown> {
-  if (!body || typeof body !== "object") {
-    return {
-      exception: {
-        values: [{ type: "Error", value: String(body), stacktrace: { frames: [] } }],
-      },
-    };
-  }
-  const b = body as Record<string, unknown>;
-  // If already Sentry-shape, pass through.
-  if (b.exception) return b;
-
-  // {name, message, stack} → Sentry envelope
-  if (typeof b.name === "string" || typeof b.message === "string" || typeof b.stack === "string") {
-    return {
-      ...b,
-      exception: {
-        values: [
-          {
-            type: typeof b.name === "string" ? b.name : (typeof b.error_type === "string" ? b.error_type : "Error"),
-            value: typeof b.message === "string" ? b.message : "",
-            stacktrace: {
-              frames: parseRawStack(typeof b.stack === "string" ? b.stack : ""),
-            },
-          },
-        ],
-      },
-    };
-  }
-  // Fall back: nothing useful, treat as a no-stack error.
-  return {
-    exception: {
-      values: [{ type: "Error", value: JSON.stringify(b).slice(0, 500), stacktrace: { frames: [] } }],
-    },
-  };
-}
-
-// Minimal V8-format stack parser for non-SDK callers (curl, raw HTTP from Python, etc).
-// Best-effort; if we can't parse, leave frames empty and rely on message-based fingerprinting.
-function parseRawStack(stack: string): StackFrame[] {
-  if (!stack) return [];
-  const frames: StackFrame[] = [];
-  for (const line of stack.split("\n")) {
-    const m1 = line.match(/^\s*at\s+(.+?)\s+\((.+):(\d+):(\d+)\)\s*$/);
-    if (m1) {
-      frames.push({
-        function: m1[1] ?? null,
-        filename: m1[2] ?? null,
-        lineno: m1[3] ? Number(m1[3]) : null,
-        colno: m1[4] ? Number(m1[4]) : null,
-      });
-      continue;
-    }
-    const m2 = line.match(/^\s*at\s+(.+):(\d+):(\d+)\s*$/);
-    if (m2) {
-      frames.push({
-        function: null,
-        filename: m2[1] ?? null,
-        lineno: m2[2] ? Number(m2[2]) : null,
-        colno: m2[3] ? Number(m2[3]) : null,
-      });
-    }
-  }
-  return frames;
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +450,24 @@ function parsePositiveInt(s: string | undefined, fallback: number): number {
   if (!s) return fallback;
   const n = Number(s);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+const KNOWN_DEPLOY_FIELDS = new Set([
+  "sha", "branch", "environment", "message", "url", "actor", "kind",
+]);
+function pickDeployExtras(b: Record<string, unknown> | null): string | null {
+  if (!b) return null;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(b)) {
+    if (KNOWN_DEPLOY_FIELDS.has(k)) continue;
+    out[k] = v;
+  }
+  if (Object.keys(out).length === 0) return null;
+  const json = JSON.stringify(out);
+  return json.length > 16384 ? json.slice(0, 16384) : json;
+}
+function safeParseDeployExtras(s: string): unknown {
+  try { return JSON.parse(s); } catch { return null; }
 }
 
 export default router;

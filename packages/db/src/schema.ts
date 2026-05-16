@@ -23,6 +23,10 @@ export const users = sqliteTable("users", {
 export const apiKeys = sqliteTable("api_keys", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // "private" = full agk_ key (account-level read/write). "public" = agp_ key
+  // scoped ONLY to /v1/public/q/<publication_id>?key=agp_… — read-only,
+  // CORS-open, safe to deploy in public dashboards.
+  kind: text("kind", { enum: ["private", "public"] }).notNull().default("private"),
   prefix: text("prefix").notNull(),
   keyHash: text("key_hash").notNull(),
   name: text("name"),
@@ -32,6 +36,30 @@ export const apiKeys = sqliteTable("api_keys", {
 }, (t) => ({
   hashIdx: uniqueIndex("api_keys_hash_idx").on(t.keyHash),
   userIdx: index("api_keys_user_idx").on(t.userId),
+  userKindIdx: index("api_keys_user_kind_idx").on(t.userId, t.kind),
+}));
+
+// Public-fetchable recipe publications. The user (via their agent) publishes
+// a (recipe_id, params) tuple → mints a publication_id. Visitors fetch
+// /v1/public/q/<publication_id>?key=agp_… and get the recipe results scoped
+// to this user's PostHog team — same isolation as their private queries,
+// but no other endpoint is reachable with the agp_ key.
+//
+// Storage is per-user; the agp_ key alone is useless without an existing
+// publication_id minted by that user.
+export const publicQueryPublications = sqliteTable("public_query_publications", {
+  id: text("id").primaryKey(),         // uuidv7 — the visitor-facing publication_id
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  recipeId: text("recipe_id").notNull(),
+  paramsJson: text("params_json").notNull().default("{}"),
+  description: text("description"),
+  createdAt: integer("created_at").notNull().default(now),
+  lastUsedAt: integer("last_used_at"),
+  revokedAt: integer("revoked_at"),
+}, (t) => ({
+  userIdx: index("pubq_user_idx").on(t.userId),
+  projectIdx: index("pubq_project_idx").on(t.projectId),
 }));
 
 export const projects = sqliteTable("projects", {

@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 import { desc, eq, lte, gte, and } from "drizzle-orm";
-import { errors, parseDsn, sha256Hex, uuidv7 } from "@agentry/shared";
+import { errors, parseDsn, sha256Hex, uuidv7 } from "@agentrysh/shared";
 import { deploys, projects } from "@agentry/db/schema";
 import { getDb } from "../db.js";
-import { requireApiKey, requireProjectAccess } from "../middleware.js";
+import { requireApiKey, requireProjectAccess, waitUntilOf } from "../middleware.js";
 import { fireWebhooks } from "../webhooks.js";
 import { incrementUsage } from "../usage.js";
 import type { AppBindings } from "../env.js";
@@ -98,18 +98,28 @@ async function handleDeployIngest(c: Parameters<typeof router.post>[1] extends i
   const message = typeof b.message === "string" ? b.message.slice(0, 4000) : null;
   const url = typeof b.url === "string" ? b.url.slice(0, 500) : null;
   const actor = typeof b.actor === "string" ? b.actor.slice(0, 200) : null;
+  const extraJson = pickExtras(b);
   await db.insert(deploys).values({
-    id, projectId, sha, branch, environment, message, url, actor, receivedAt: now,
+    id, projectId, sha, branch, environment, message, url, actor, extraJson, receivedAt: now,
   });
   await incrementUsage(c.env, projectId, "deploys");
 
-  const waitUntil = (p: Promise<unknown>) =>
-    c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
+  const waitUntil = waitUntilOf(c);
   await fireWebhooks(
     c.env,
     projectId,
     "deploy.recorded",
-    { deploy_id: id, sha, branch, environment, message, url, actor, received_at: now },
+    {
+      deploy_id: id,
+      sha,
+      branch,
+      environment,
+      message,
+      url,
+      actor,
+      extra: extraJson ? safeParseJson(extraJson) : null,
+      received_at: now,
+    },
     { waitUntil },
   );
 
@@ -143,6 +153,25 @@ function clamp(n: number, min: number, max: number, fallback: number): number {
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
 }
 
+// Capture every top-level field that's NOT one of the structured columns into
+// extra_json. Lets customers attach things like commit_count, ci_run_id,
+// build_id, pipeline_url — anything — and have them queryable via json_extract.
+const KNOWN_DEPLOY_FIELDS = new Set([
+  "sha", "branch", "environment", "message", "url", "actor", "kind",
+]);
+function pickExtras(b: Record<string, unknown> | null): string | null {
+  if (!b) return null;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(b)) {
+    if (KNOWN_DEPLOY_FIELDS.has(k)) continue;
+    out[k] = v;
+  }
+  if (Object.keys(out).length === 0) return null;
+  // Soft cap so a customer can't pile a megabyte into a single deploy event.
+  const json = JSON.stringify(out);
+  return json.length > 16384 ? json.slice(0, 16384) : json;
+}
+
 export function serializeDeploy(d: import("@agentry/db/schema").Deploy) {
   return {
     id: d.id,
@@ -152,8 +181,17 @@ export function serializeDeploy(d: import("@agentry/db/schema").Deploy) {
     message: d.message,
     url: d.url,
     actor: d.actor,
+    extra: d.extraJson ? safeParseJson(d.extraJson) : null,
     received_at: d.receivedAt,
   };
+}
+
+function safeParseJson(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
 }
 
 // Helper exported for cases.ts to look up nearby deploys.

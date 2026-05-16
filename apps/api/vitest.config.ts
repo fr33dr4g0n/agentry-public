@@ -8,7 +8,7 @@ export default defineConfig({
     alias: [
       // Point workspace packages at their src so we don't need a rebuild between edits.
       {
-        find: /^@agentry\/shared$/,
+        find: /^@agentry\.sh\/shared$/,
         replacement: resolve(root, "packages/shared/src/index.ts"),
       },
       {

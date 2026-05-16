@@ -4,7 +4,7 @@
 
 import { Hono } from "hono";
 import { sql } from "drizzle-orm";
-import { errors } from "@agentry/shared";
+import { errors } from "@agentrysh/shared";
 import { events } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey, requireProjectAccess } from "../middleware.js";

@@ -132,6 +132,7 @@ const STATEMENTS: string[] = [
     message text,
     url text,
     actor text,
+    extra_json text,
     received_at integer DEFAULT (unixepoch()) NOT NULL,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE cascade
   )`,

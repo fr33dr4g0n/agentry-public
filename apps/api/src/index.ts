@@ -21,6 +21,8 @@ import adminRoutes from "./routes/admin.js";
 import usageRoutes from "./routes/usage.js";
 import sourcemapRoutes from "./routes/sourcemaps.js";
 import posthogConfigRoutes from "./routes/posthog-config.js";
+import posthogFeaturesRoutes from "./routes/posthog-features.js";
+import publicQueriesRoutes, { publicRouter as publicQueryRunner } from "./routes/public-queries.js";
 import { snapshotAllUsers } from "./usage.js";
 import type { AppBindings, Env } from "./env.js";
 
@@ -177,8 +179,19 @@ export function createApp() {
   // Sourcemap upload / list / delete (DSN auth, project-scoped).
   app.route("/", sourcemapRoutes);
 
-  // PostHog per-user feature config — session replay today, more coming.
+  // PostHog per-user feature config — session replay strategy / retention.
   app.route("/", posthogConfigRoutes);
+
+  // PostHog per-user CRUD — feature flags, cohorts, surveys, session
+  // replay retrieval. All scope to the user's team via the master key
+  // + team_id derived from the agentry user_id.
+  app.route("/", posthogFeaturesRoutes);
+
+  // Owner-side publish/list/revoke (api-key auth).
+  app.route("/", publicQueriesRoutes);
+
+  // Visitor-side execution — open CORS, agp_ key in query param.
+  app.route("/", publicQueryRunner);
 
   return app;
 }

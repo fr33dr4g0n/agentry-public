@@ -1,4 +1,4 @@
-import type { StackFrame } from "@agentry/shared";
+import type { StackFrame } from "@agentrysh/shared";
 
 // Browsers emit stacks in two main formats:
 //   Chrome/Edge (V8): "    at functionName (file:line:col)" or "    at file:line:col"

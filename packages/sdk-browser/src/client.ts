@@ -1,4 +1,4 @@
-import { parseDsn, type IngestEventPayload } from "@agentry/shared";
+import { parseDsn, type IngestEventPayload } from "@agentrysh/shared";
 import { buildEventPayload, type CaptureContext } from "./payload.js";
 
 function serializeForLog(payload: unknown): unknown {

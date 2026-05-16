@@ -82,6 +82,76 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     },
   },
   {
+    name: "agentry_publish_query",
+    description:
+      "Mint a public-fetchable URL for a specific recipe + params combination. The returned " +
+      "URL can be embedded in a PUBLIC dashboard (your marketing site, a customer-facing " +
+      "metrics page, etc.) — visitors fetch the rendered query results without an account, " +
+      "credential, or session." +
+      "" +
+      "Auth model: the URL embeds the user's `agp_…` PUBLIC key (auto-minted at login alongside " +
+      "the private `agk_…`). agp_ is read-only AND can only fetch publications you explicitly " +
+      "created. Even if the URL leaks to the entire internet, the worst case is that the SAME " +
+      "(recipe + params) query you already chose to make public can be re-fetched. No other " +
+      "data is reachable." +
+      "" +
+      "Workflow: ASK the user what to publish (which metric, which params), call this tool, " +
+      "embed the returned `public_url?key=<agp_…>` in their page. CORS is open. Revoke with " +
+      "agentry_revoke_publication.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        recipe_id: {
+          type: "string",
+          description:
+            "ID from agentry_list_recipes. Bound to this publication permanently — to change " +
+            "the recipe, revoke + republish.",
+        },
+        params: {
+          type: "object",
+          description:
+            "Recipe params (matches recipe.params schema). Bound to this publication.",
+        },
+        description: {
+          type: "string",
+          description:
+            "What this dashboard widget shows — for your own future reference in " +
+            "agentry_list_publications.",
+        },
+      },
+      required: ["recipe_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_list_publications",
+    description:
+      "List active public-fetchable query publications for this project. Returns each one's " +
+      "public_url + last_used_at. Use this to audit what's currently exposed publicly.",
+    inputSchema: {
+      type: "object",
+      properties: { project_id: { type: "string" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_revoke_publication",
+    description:
+      "Revoke a public-fetchable query publication. The public_url will start returning 410 " +
+      "(Gone). Use when the dashboard widget is decommissioned or the embedded URL leaks " +
+      "somewhere unintended.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        publication_id: { type: "string" },
+      },
+      required: ["publication_id"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "agentry_configure_session_replay",
     description:
       "Enable / disable / customize PostHog session replay for the user's project. " +
@@ -149,17 +219,292 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     name: "agentry_session_replay_status",
     description:
       "Get the current session-replay configuration for the user's project AND a deep-link " +
-      "URL into PostHog's Replay tab for viewing recordings. " +
-      "" +
-      "agentry's MCP can't currently retrieve recording bytes programmatically — the master " +
-      "Personal API Key needs `session_recording:read` scope expanded. As an interim, this " +
-      "tool returns `web_ui_url` — paste into a browser to view recordings. Coming: " +
-      "agentry_get_session_replays(case_id) returning playable URLs once scope is widened.",
+      "URL into PostHog's Replay tab. For programmatic recording retrieval (returning the " +
+      "list of recordings or player URLs), call agentry_list_session_replays / " +
+      "agentry_get_session_replay — both work as of 2026-05-15 (master Personal API Key " +
+      "now has session_recording:read scope).",
     inputSchema: {
       type: "object",
       properties: {
         project_id: { type: "string" },
       },
+      additionalProperties: false,
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // PostHog per-user-team CRUD: feature flags, cohorts, surveys, session
+  // recordings retrieval. Each wraps an /api/projects/<team_id>/<resource>/
+  // endpoint on the user's per-user PostHog team. Master Personal API Key
+  // has `*` scope as of 2026-05-15 so all of these are live.
+  // ---------------------------------------------------------------------------
+  {
+    name: "agentry_list_feature_flags",
+    description:
+      "List feature flags on the user's PostHog project. Use this to inspect what flags " +
+      "exist before creating new ones, or to find a flag's id to update/delete it. Each " +
+      "flag has: id, key, name, active, filters (rollout rules), created_at.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        limit: { type: "number", description: "Max flags to return (default 100, max 200)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_get_feature_flag",
+    description:
+      "Fetch a single feature flag's full configuration (filters, variants, conditions).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        flag_id: {
+          type: "string",
+          description: "Numeric id from agentry_list_feature_flags (NOT the flag's key string).",
+        },
+      },
+      required: ["flag_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_create_feature_flag",
+    description:
+      "Create a new feature flag. Two shapes supported:" +
+      "" +
+      "  - Simple: pass {key, name?, active?, rollout_percentage?} — single-group filter at " +
+      "    the given % rollout (0-100). Default: active=true, rollout=100." +
+      "" +
+      "  - Advanced: pass {key, name?, active?, filters} — `filters` is PostHog's raw filter " +
+      "    object ({groups: [{properties: [...], rollout_percentage}], multivariate?, …}). " +
+      "    Use this for property-targeted rules, multi-variant flags, or cohort-scoped flags.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        key: { type: "string", description: "Stable slug used in code (e.g. `new-checkout-flow`)." },
+        name: { type: "string", description: "Human label (defaults to key)." },
+        active: { type: "boolean", description: "Default true." },
+        rollout_percentage: { type: "number", description: "0–100 (simple shape)." },
+        filters: { type: "object", description: "Raw PostHog filter object (advanced shape)." },
+      },
+      required: ["key"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_update_feature_flag",
+    description:
+      "Patch a feature flag. Toggle on/off via {active}, change rollout via {rollout_percentage}, " +
+      "rename via {name}, or replace targeting with {filters}.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        flag_id: { type: "string" },
+        active: { type: "boolean" },
+        name: { type: "string" },
+        rollout_percentage: { type: "number" },
+        filters: { type: "object" },
+      },
+      required: ["flag_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_delete_feature_flag",
+    description:
+      "Soft-delete a feature flag (sets deleted=true; recoverable in PostHog's web UI).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        flag_id: { type: "string" },
+      },
+      required: ["flag_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_list_cohorts",
+    description:
+      "List cohorts (dynamic user segments) on the user's PostHog project. Cohorts are " +
+      "groups of users matching a filter (e.g. 'users who did event X in last 30 days'). " +
+      "Used by feature-flag targeting and HogQL queries.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_get_cohort",
+    description: "Fetch a single cohort's definition (filters, last calculation time, count).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        cohort_id: { type: "string" },
+      },
+      required: ["cohort_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_create_cohort",
+    description:
+      "Create a cohort. Two shapes supported:" +
+      "" +
+      "  - Simple: {name, event, days?} — users who fired `event` at least once in the last " +
+      "    N days (days defaults to 30)." +
+      "" +
+      "  - Advanced: {name, groups} — `groups` is PostHog's raw cohort-group filter array, " +
+      "    for property-targeted or multi-condition cohorts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        name: { type: "string" },
+        event: { type: "string", description: "Event name (simple shape)." },
+        days: { type: "number", description: "Lookback window in days (default 30, simple shape)." },
+        groups: { type: "array", description: "Raw PostHog cohort-group filters (advanced shape)." },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_delete_cohort",
+    description: "Soft-delete a cohort (recoverable in PostHog's web UI).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        cohort_id: { type: "string" },
+      },
+      required: ["cohort_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_list_surveys",
+    description:
+      "List surveys on the user's PostHog project. A survey is a popup/banner/widget the " +
+      "customer's PostHog-JS-enabled site renders to ask users a question (NPS, CSAT, " +
+      "free-text). Responses land as `survey sent` events.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_get_survey",
+    description:
+      "Fetch a single survey's definition. To read responses, query HogQL: " +
+      "`SELECT properties FROM events WHERE event = 'survey sent' AND properties.\\$survey_id = '<id>'`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        survey_id: { type: "string" },
+      },
+      required: ["survey_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_create_survey",
+    description:
+      "Create a survey. Quick shape: {name, question, question_type?} for a single-question " +
+      "popover (question_type defaults to 'open' — also 'rating', 'single_choice', " +
+      "'multiple_choice', 'link'). Advanced: pass {name, questions: [...]} for multi-question. " +
+      "" +
+      "Surveys are created in DRAFT — pass start_date (ISO) to launch immediately, or call " +
+      "PATCH /surveys/:id with {start_date} later.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        name: { type: "string" },
+        type: {
+          type: "string",
+          enum: ["popover", "widget", "button", "api"],
+          description: "Render style. Default 'popover'.",
+        },
+        question: { type: "string", description: "Single-question quick shape." },
+        question_type: {
+          type: "string",
+          enum: ["open", "rating", "single_choice", "multiple_choice", "link"],
+        },
+        questions: { type: "array", description: "Multi-question array (advanced shape)." },
+        description: { type: "string" },
+        linked_flag_id: { type: "number" },
+        targeting_flag_id: { type: "number" },
+        conditions: { type: "object" },
+        appearance: { type: "object" },
+        start_date: { type: "string", description: "ISO timestamp to launch immediately." },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_delete_survey",
+    description: "Delete a survey (PostHog hard-deletes survey rows on DELETE).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        survey_id: { type: "string" },
+      },
+      required: ["survey_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_list_session_replays",
+    description:
+      "List session recordings on the user's PostHog project. Use this to find replays " +
+      "linked to a user (distinct_id) or a time range — e.g. when investigating an error, " +
+      "filter by the affected user's distinct_id to find the recording leading up to it. " +
+      "" +
+      "Note: session replay must be ENABLED first (call agentry_configure_session_replay). " +
+      "Recordings are only captured while a strategy is on.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        distinct_id: {
+          type: "string",
+          description: "Filter to one user (e.g. from a case's affected_users).",
+        },
+        date_from: { type: "string", description: "ISO timestamp lower bound." },
+        date_to: { type: "string", description: "ISO timestamp upper bound." },
+        limit: { type: "number", description: "Max recordings (default 25, max 100)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_get_session_replay",
+    description:
+      "Fetch a single session recording's metadata + player URL. Open `player_url` in a " +
+      "browser to watch. For programmatic DOM-event inspection (the snapshot data), call " +
+      "the snapshots subresource directly via curl using the agentry-injected master key.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        replay_id: { type: "string" },
+      },
+      required: ["replay_id"],
       additionalProperties: false,
     },
   },
@@ -998,11 +1343,22 @@ function projectByLookup(cfg: AgentryConfig, projectId: string): AgentryProjectC
 
 function persistKeyResponse(
   cfg: AgentryConfig,
-  resp: { api_key: string; user_id: string; prefix: string }
+  resp: {
+    api_key: string;
+    user_id: string;
+    prefix: string;
+    public_api_key?: string;
+  }
 ): AgentryConfig {
   const next: AgentryConfig = {
     ...cfg,
     api_key: resp.api_key,
+    // Persist the agp_ public key too (returned by login response). Only
+    // overwrite if the new response provides one; rotation/repair paths
+    // don't necessarily return public keys.
+    ...(resp.public_api_key && !resp.public_api_key.startsWith("(redacted")
+      ? { public_api_key: resp.public_api_key }
+      : {}),
   };
   saveConfig(next);
   return next;
@@ -1094,6 +1450,22 @@ export async function dispatchTool(
         return await handleRotateKey();
       case "agentry_repair_analytics":
         return await handleRepairAnalytics();
+      case "agentry_publish_query":
+        return await handlePublishQuery({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          recipe_id: String(a.recipe_id ?? ""),
+          params: a.params && typeof a.params === "object"
+            ? (a.params as Record<string, unknown>)
+            : undefined,
+          description: a.description ? String(a.description) : undefined,
+        });
+      case "agentry_list_publications":
+        return await handleListPublications(a.project_id ? String(a.project_id) : undefined);
+      case "agentry_revoke_publication":
+        return await handleRevokePublication({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          publication_id: String(a.publication_id ?? ""),
+        });
       case "agentry_configure_session_replay":
         return await handleConfigureSessionReplay({
           project_id: a.project_id ? String(a.project_id) : undefined,
@@ -1109,6 +1481,101 @@ export async function dispatchTool(
         return await handleSessionReplayStatus(
           a.project_id ? String(a.project_id) : undefined,
         );
+      case "agentry_list_feature_flags":
+        return await handleListFeatureFlags({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          limit: typeof a.limit === "number" ? a.limit : undefined,
+        });
+      case "agentry_get_feature_flag":
+        return await handleGetFeatureFlag({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          flag_id: String(a.flag_id ?? ""),
+        });
+      case "agentry_create_feature_flag":
+        return await handleCreateFeatureFlag({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          key: String(a.key ?? ""),
+          name: a.name ? String(a.name) : undefined,
+          active: typeof a.active === "boolean" ? a.active : undefined,
+          rollout_percentage: typeof a.rollout_percentage === "number" ? a.rollout_percentage : undefined,
+          filters: a.filters && typeof a.filters === "object" ? (a.filters as Record<string, unknown>) : undefined,
+        });
+      case "agentry_update_feature_flag":
+        return await handleUpdateFeatureFlag({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          flag_id: String(a.flag_id ?? ""),
+          active: typeof a.active === "boolean" ? a.active : undefined,
+          name: a.name ? String(a.name) : undefined,
+          rollout_percentage: typeof a.rollout_percentage === "number" ? a.rollout_percentage : undefined,
+          filters: a.filters && typeof a.filters === "object" ? (a.filters as Record<string, unknown>) : undefined,
+        });
+      case "agentry_delete_feature_flag":
+        return await handleDeleteFeatureFlag({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          flag_id: String(a.flag_id ?? ""),
+        });
+      case "agentry_list_cohorts":
+        return await handleListCohorts(a.project_id ? String(a.project_id) : undefined);
+      case "agentry_get_cohort":
+        return await handleGetCohort({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          cohort_id: String(a.cohort_id ?? ""),
+        });
+      case "agentry_create_cohort":
+        return await handleCreateCohort({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          name: String(a.name ?? ""),
+          event: a.event ? String(a.event) : undefined,
+          days: typeof a.days === "number" ? a.days : undefined,
+          groups: Array.isArray(a.groups) ? (a.groups as Array<Record<string, unknown>>) : undefined,
+        });
+      case "agentry_delete_cohort":
+        return await handleDeleteCohort({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          cohort_id: String(a.cohort_id ?? ""),
+        });
+      case "agentry_list_surveys":
+        return await handleListSurveys(a.project_id ? String(a.project_id) : undefined);
+      case "agentry_get_survey":
+        return await handleGetSurvey({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          survey_id: String(a.survey_id ?? ""),
+        });
+      case "agentry_create_survey":
+        return await handleCreateSurvey({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          name: String(a.name ?? ""),
+          type: a.type ? (String(a.type) as "popover" | "widget" | "button" | "api") : undefined,
+          question: a.question ? String(a.question) : undefined,
+          question_type: a.question_type
+            ? (String(a.question_type) as "open" | "rating" | "single_choice" | "multiple_choice" | "link")
+            : undefined,
+          questions: Array.isArray(a.questions) ? (a.questions as Array<Record<string, unknown>>) : undefined,
+          description: a.description ? String(a.description) : undefined,
+          linked_flag_id: typeof a.linked_flag_id === "number" ? a.linked_flag_id : undefined,
+          targeting_flag_id: typeof a.targeting_flag_id === "number" ? a.targeting_flag_id : undefined,
+          conditions: a.conditions && typeof a.conditions === "object" ? (a.conditions as Record<string, unknown>) : undefined,
+          appearance: a.appearance && typeof a.appearance === "object" ? (a.appearance as Record<string, unknown>) : undefined,
+          start_date: a.start_date ? String(a.start_date) : undefined,
+        });
+      case "agentry_delete_survey":
+        return await handleDeleteSurvey({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          survey_id: String(a.survey_id ?? ""),
+        });
+      case "agentry_list_session_replays":
+        return await handleListSessionReplays({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          distinct_id: a.distinct_id ? String(a.distinct_id) : undefined,
+          date_from: a.date_from ? String(a.date_from) : undefined,
+          date_to: a.date_to ? String(a.date_to) : undefined,
+          limit: typeof a.limit === "number" ? a.limit : undefined,
+        });
+      case "agentry_get_session_replay":
+        return await handleGetSessionReplay({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          replay_id: String(a.replay_id ?? ""),
+        });
       case "agentry_list_projects":
         return await handleListProjects();
       case "agentry_create_project":
@@ -1530,6 +1997,77 @@ async function handleRepairAnalytics(): Promise<ToolResult> {
   }
 }
 
+async function handlePublishQuery(input: {
+  project_id?: string;
+  recipe_id: string;
+  params?: Record<string, unknown>;
+  description?: string;
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const picked = pickProject(cfg, input.project_id);
+  if (!picked) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project_id given and no default project set.",
+        next_action: "Pass project_id, or call agentry_create_project.",
+      },
+    };
+  }
+  const resp = await api.publishQuery(cfg, picked.id, {
+    recipe_id: input.recipe_id,
+    params: input.params,
+    description: input.description,
+  });
+  // Help the agent: fetch the user's agp_ key from the local config and
+  // append it as a query param to the public URL.
+  const agp =
+    (cfg as unknown as { public_api_key?: string }).public_api_key ?? null;
+  const embeddableUrl = agp ? `${resp.public_url}?key=${agp}` : resp.public_url;
+  return {
+    ...resp,
+    embeddable_url: embeddableUrl,
+    next_action: agp
+      ? "Embed embeddable_url in the public dashboard. CORS is open. Revoke any time with " +
+        "agentry_revoke_publication if it's leaked or no longer needed."
+      : "Your agp_ public key isn't cached locally yet — call agentry_login to mint it. Once " +
+        "minted, paste it as ?key=<agp_…> on the public_url to embed.",
+  };
+}
+
+async function handleListPublications(projectId?: string): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const picked = pickProject(cfg, projectId);
+  if (!picked) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project_id given and no default project set.",
+        next_action: "Pass project_id.",
+      },
+    };
+  }
+  return await api.listPublications(cfg, picked.id);
+}
+
+async function handleRevokePublication(input: {
+  project_id?: string;
+  publication_id: string;
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const picked = pickProject(cfg, input.project_id);
+  if (!picked) {
+    return {
+      error: {
+        code: "no_project",
+        message: "No project_id given and no default project set.",
+        next_action: "Pass project_id.",
+      },
+    };
+  }
+  return await api.revokePublication(cfg, picked.id, input.publication_id);
+}
+
 async function handleConfigureSessionReplay(input: {
   project_id?: string;
   strategy: "off" | "all" | "sampled" | "url_scoped" | "errors_only";
@@ -1571,6 +2109,281 @@ async function handleSessionReplayStatus(projectId?: string): Promise<ToolResult
     };
   }
   return await api.getSessionReplayStatus(cfg, picked.id);
+}
+
+// ---------------------------------------------------------------------------
+// PostHog per-user-team CRUD handlers.
+// Shared helper for the "no project" error envelope to keep handlers terse.
+// ---------------------------------------------------------------------------
+
+function pickOrError(
+  cfg: AgentryConfig,
+  projectId: string | undefined,
+): { ok: true; id: string } | { ok: false; error: ToolResult } {
+  const picked = pickProject(cfg, projectId);
+  if (!picked) {
+    return {
+      ok: false,
+      error: {
+        error: {
+          code: "no_project",
+          message: "No project_id given and no default project set.",
+          next_action: "Pass project_id, or call agentry_create_project.",
+        },
+      },
+    };
+  }
+  return { ok: true, id: picked.id };
+}
+
+async function handleListFeatureFlags(input: {
+  project_id?: string;
+  limit?: number;
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.listFeatureFlags(cfg, r.id, { limit: input.limit });
+}
+
+async function handleGetFeatureFlag(input: {
+  project_id?: string;
+  flag_id: string;
+}): Promise<ToolResult> {
+  if (!input.flag_id) {
+    return { error: { code: "invalid_payload", message: "flag_id is required.", next_action: "Pass flag_id (numeric, from agentry_list_feature_flags)." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.getFeatureFlag(cfg, r.id, input.flag_id);
+}
+
+async function handleCreateFeatureFlag(input: {
+  project_id?: string;
+  key: string;
+  name?: string;
+  active?: boolean;
+  rollout_percentage?: number;
+  filters?: Record<string, unknown>;
+}): Promise<ToolResult> {
+  if (!input.key) {
+    return { error: { code: "invalid_payload", message: "key is required.", next_action: "Pass key (slug, e.g. 'new-checkout-flow')." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.createFeatureFlag(cfg, r.id, {
+    key: input.key,
+    name: input.name,
+    active: input.active,
+    rollout_percentage: input.rollout_percentage,
+    filters: input.filters,
+  });
+}
+
+async function handleUpdateFeatureFlag(input: {
+  project_id?: string;
+  flag_id: string;
+  active?: boolean;
+  name?: string;
+  rollout_percentage?: number;
+  filters?: Record<string, unknown>;
+}): Promise<ToolResult> {
+  if (!input.flag_id) {
+    return { error: { code: "invalid_payload", message: "flag_id is required.", next_action: "Pass flag_id (numeric)." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.updateFeatureFlag(cfg, r.id, input.flag_id, {
+    active: input.active,
+    name: input.name,
+    rollout_percentage: input.rollout_percentage,
+    filters: input.filters,
+  });
+}
+
+async function handleDeleteFeatureFlag(input: {
+  project_id?: string;
+  flag_id: string;
+}): Promise<ToolResult> {
+  if (!input.flag_id) {
+    return { error: { code: "invalid_payload", message: "flag_id is required.", next_action: "Pass flag_id (numeric)." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.deleteFeatureFlag(cfg, r.id, input.flag_id);
+}
+
+async function handleListCohorts(projectId?: string): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, projectId);
+  if (!r.ok) return r.error;
+  return await api.listCohorts(cfg, r.id);
+}
+
+async function handleGetCohort(input: {
+  project_id?: string;
+  cohort_id: string;
+}): Promise<ToolResult> {
+  if (!input.cohort_id) {
+    return { error: { code: "invalid_payload", message: "cohort_id is required.", next_action: "Pass cohort_id (numeric)." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.getCohort(cfg, r.id, input.cohort_id);
+}
+
+async function handleCreateCohort(input: {
+  project_id?: string;
+  name: string;
+  event?: string;
+  days?: number;
+  groups?: Array<Record<string, unknown>>;
+}): Promise<ToolResult> {
+  if (!input.name) {
+    return { error: { code: "invalid_payload", message: "name is required.", next_action: "Pass cohort name." } };
+  }
+  if (!input.event && (!input.groups || input.groups.length === 0)) {
+    return {
+      error: {
+        code: "invalid_payload",
+        message: "Cohort body must include 'event' (simple shape) or 'groups' (advanced shape).",
+        next_action: "Pass event='signup_completed' (last N days) or pass groups: [...PostHog filter format].",
+      },
+    };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  const body = input.groups
+    ? { name: input.name, groups: input.groups }
+    : { name: input.name, event: input.event as string, days: input.days };
+  return await api.createCohort(cfg, r.id, body);
+}
+
+async function handleDeleteCohort(input: {
+  project_id?: string;
+  cohort_id: string;
+}): Promise<ToolResult> {
+  if (!input.cohort_id) {
+    return { error: { code: "invalid_payload", message: "cohort_id is required.", next_action: "Pass cohort_id (numeric)." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.deleteCohort(cfg, r.id, input.cohort_id);
+}
+
+async function handleListSurveys(projectId?: string): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, projectId);
+  if (!r.ok) return r.error;
+  return await api.listSurveys(cfg, r.id);
+}
+
+async function handleGetSurvey(input: {
+  project_id?: string;
+  survey_id: string;
+}): Promise<ToolResult> {
+  if (!input.survey_id) {
+    return { error: { code: "invalid_payload", message: "survey_id is required.", next_action: "Pass survey_id." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.getSurvey(cfg, r.id, input.survey_id);
+}
+
+async function handleCreateSurvey(input: {
+  project_id?: string;
+  name: string;
+  type?: "popover" | "widget" | "button" | "api";
+  question?: string;
+  question_type?: "open" | "rating" | "single_choice" | "multiple_choice" | "link";
+  questions?: Array<Record<string, unknown>>;
+  description?: string;
+  linked_flag_id?: number;
+  targeting_flag_id?: number;
+  conditions?: Record<string, unknown>;
+  appearance?: Record<string, unknown>;
+  start_date?: string;
+}): Promise<ToolResult> {
+  if (!input.name) {
+    return { error: { code: "invalid_payload", message: "name is required.", next_action: "Pass survey name." } };
+  }
+  if (!input.question && (!input.questions || input.questions.length === 0)) {
+    return {
+      error: {
+        code: "invalid_payload",
+        message: "Survey must include 'question' (simple) or 'questions' (multi).",
+        next_action: "Pass question='How likely are you to recommend us?' OR questions: [{type, question}, ...]",
+      },
+    };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.createSurvey(cfg, r.id, {
+    name: input.name,
+    type: input.type,
+    question: input.question,
+    question_type: input.question_type,
+    questions: input.questions,
+    description: input.description,
+    linked_flag_id: input.linked_flag_id,
+    targeting_flag_id: input.targeting_flag_id,
+    conditions: input.conditions,
+    appearance: input.appearance,
+    start_date: input.start_date,
+  });
+}
+
+async function handleDeleteSurvey(input: {
+  project_id?: string;
+  survey_id: string;
+}): Promise<ToolResult> {
+  if (!input.survey_id) {
+    return { error: { code: "invalid_payload", message: "survey_id is required.", next_action: "Pass survey_id." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.deleteSurvey(cfg, r.id, input.survey_id);
+}
+
+async function handleListSessionReplays(input: {
+  project_id?: string;
+  distinct_id?: string;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.listSessionReplays(cfg, r.id, {
+    distinctId: input.distinct_id,
+    dateFrom: input.date_from,
+    dateTo: input.date_to,
+    limit: input.limit,
+  });
+}
+
+async function handleGetSessionReplay(input: {
+  project_id?: string;
+  replay_id: string;
+}): Promise<ToolResult> {
+  if (!input.replay_id) {
+    return { error: { code: "invalid_payload", message: "replay_id is required.", next_action: "Pass replay_id from agentry_list_session_replays." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.getSessionReplay(cfg, r.id, input.replay_id);
 }
 
 async function handleListProjects(): Promise<ToolResult> {

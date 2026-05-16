@@ -34,6 +34,7 @@ export function constantTimeEqual(a: string, b: string): boolean {
 // Stored as sha256 hash; raw value shown to user once.
 
 export const API_KEY_PREFIX = "agk_";
+export const PUBLIC_KEY_PREFIX = "agp_";
 export const DSN_PREFIX = "agnt_";
 
 export interface MintedKey {
@@ -47,6 +48,18 @@ export async function mintApiKey(): Promise<MintedKey> {
   globalThis.crypto.getRandomValues(bytes);
   const tail = base64url(bytes);
   const raw = `${API_KEY_PREFIX}${tail}`;
+  const hash = await sha256Hex(raw);
+  return { raw, hash, prefix: raw.slice(0, 12) };
+}
+
+// agp_ — public/dashboard key. Same shape, different prefix. Only valid for
+// /v1/public/q/<publication_id>?key=agp_… — visitor-facing, CORS-open,
+// read-only, scoped to publications the user explicitly created.
+export async function mintPublicKey(): Promise<MintedKey> {
+  const bytes = new Uint8Array(24);
+  globalThis.crypto.getRandomValues(bytes);
+  const tail = base64url(bytes);
+  const raw = `${PUBLIC_KEY_PREFIX}${tail}`;
   const hash = await sha256Hex(raw);
   return { raw, hash, prefix: raw.slice(0, 12) };
 }

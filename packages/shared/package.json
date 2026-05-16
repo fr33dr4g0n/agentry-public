@@ -1,7 +1,7 @@
 {
-  "name": "@agentry/shared",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@agentrysh/shared",
+  "version": "0.0.1",
+  "description": "Shared types, error envelopes, fingerprinting and DSN parsing for agentry. Used by @agentrysh/mcp and any custom agentry integration.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -9,13 +9,44 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "tsc -b"
+  },
+  "keywords": [
+    "agentry",
+    "mcp",
+    "observability",
+    "error-tracking",
+    "analytics"
+  ],
+  "license": "MIT",
+  "author": "Henrik Harju <harjuhenrik@gmail.com>",
+  "homepage": "https://agentry.sh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentry/agentry.git",
+    "directory": "packages/shared"
+  },
+  "bugs": {
+    "url": "https://github.com/agentry/agentry/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "zod": "^3.23.8"

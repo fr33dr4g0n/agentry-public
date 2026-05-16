@@ -4,7 +4,7 @@ import {
   RecordSuppressionRequestSchema,
   errors,
   uuidv7,
-} from "@agentry/shared";
+} from "@agentrysh/shared";
 import { suppressionEntries } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey, requireProjectAccess } from "../middleware.js";

@@ -1,10 +1,35 @@
 import type { Context, MiddlewareHandler } from "hono";
-import { errors, sha256Hex } from "@agentry/shared";
+import { errors, sha256Hex } from "@agentrysh/shared";
 import { apiKeys, cases, projects, users } from "@agentry/db/schema";
 import { and, eq, isNull } from "drizzle-orm";
 import type { ApiKey, Case, Project, User } from "@agentry/db/schema";
 import { getDb } from "./db.js";
 import type { AppBindings } from "./env.js";
+
+/**
+ * Safely extract a waitUntil function from a Hono Context.
+ *
+ * Hono's `c.executionCtx` getter THROWS synchronously when the underlying
+ * runtime is not Cloudflare Workers (e.g. plain Node in tests, or any non-Workers
+ * fetch handler). Optional chaining (`c.executionCtx?.waitUntil`) does NOT catch
+ * a thrown getter — it only protects against null/undefined receivers.
+ *
+ * This helper handles both cases: returns a real waitUntil when available,
+ * falls back to fire-and-forget with error swallowing otherwise.
+ */
+export function waitUntilOf(c: Context<AppBindings>): (p: Promise<unknown>) => void {
+  try {
+    const ec = c.executionCtx;
+    if (ec && typeof ec.waitUntil === "function") {
+      return (p) => ec.waitUntil(p);
+    }
+  } catch {
+    /* no executionCtx — fall through to inline */
+  }
+  return (p) => {
+    void p.catch(() => {});
+  };
+}
 
 export function requireApiKey(): MiddlewareHandler<AppBindings> {
   return async (c, next) => {

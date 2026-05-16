@@ -1,7 +1,51 @@
 # Agentry — Build Status
 
-**Last updated:** 2026-05-10 (user identification — setUser, affected_users, per-user views)
-**Phase:** ✅ v0 with capture + query + memory + alerts + **user identification**. Errors and analytics now correlate by `user_id`/`distinct_id` so the agent can answer "how many users hit this bug? who? what did they do before?" PostHog gated on env vars.
+**Last updated:** 2026-05-15 (PostHog CRUD MCP tools + three-token doc)
+**Phase:** ✅ v0 with capture + query + memory + alerts + user identification + agent feedback + plan + usage metering + **public dashboard key (`agp_…`) + split agentry.md/agentry-install.md docs**.
+
+**Most recent additions (2026-05-15, evening):**
+
+  - **PostHog CRUD MCP tools — 15 new tools.** Master Personal API Key
+    rotated to `*` scope (PostHog UI). New API routes file
+    `apps/api/src/routes/posthog-features.ts` mounts
+    `/v1/projects/:id/{feature-flags,cohorts,surveys,session-replays}` —
+    full CRUD wrapping PostHog's own REST API with master-key auth +
+    per-user team_id scoping (server-side enforced via
+    `getPosthogProjectForUser`). MCP tools land in `packages/mcp`:
+    `agentry_{list,get,create,update,delete}_feature_flag`,
+    `agentry_{list,get,create,delete}_cohort`,
+    `agentry_{list,get,create,delete}_survey`,
+    `agentry_{list,get}_session_replay`. Generic `posthogTeamApi<T>` helper
+    in `apps/api/src/posthog.ts` keeps the routes thin. MCP version bumped
+    to `0.0.12`. API redeployed (`Current Version ID: e009fd4c-…`).
+
+  - **Three-token docs clarification.** `/agentry.md` now opens its
+    auth section with a table laying out all three tokens side-by-side
+    (`agk_` private, `agp_` public dashboard, `agnt_` DSN) with blast
+    radius + where each goes. Resolves user confusion about whether
+    SPAs leak the private key when sending events (they don't — they
+    use the DSN). `/agentry-install.md` "Feature flags / cohorts /
+    surveys" section rewritten to document the 15 new MCP tools with
+    per-resource tables instead of saying "MCP coming".
+
+**Earlier (2026-05-15):**
+
+  - **Public dashboard key (`agp_…`)** — every account auto-mints two keys at first login: private `agk_` (Bearer auth, full account) + public `agp_` (Stripe-style publishable token, only auths the visitor-facing query endpoint and only for explicitly minted publications). New table `public_query_publications`, new column `api_keys.kind` (private|public). New routes: `POST/GET/DELETE /v1/projects/:id/public-queries` (owner-side CRUD, agk_ auth) + `GET /v1/public/q/:publication_id?key=agp_…` (visitor-side execution, open CORS). New MCP tools: `agentry_publish_query`, `agentry_list_publications`, `agentry_revoke_publication`. Schema migration `migrate-add-public-keys.ts` already applied to prod Turso. Tests pass (42 api).
+  - **Docs split.** `/agentry.md` is now the lean day-to-day reference (~280 lines: principle, two-prompt onboarding, signal types, cases, two-key model, API surface, MCP tool table, error envelope, source pointers). `/agentry-install.md` is the install + ops handbook (12-step install flow, sourcemaps, session replay, feature flags/cohorts/surveys status, webhooks, recipes, public-dashboard publish flow, privacy disclosure). `/llms.txt` still aliases the lean reference. `_redirects` + `Base.astro` updated to point at both. New `install_docs: "/agentry-install.md"` field in the `/` discovery JSON. Tests assert lean reference does NOT contain the 12-step install heading.
+
+**Earlier:** plans + usage metering observe-only (Free 100k events / 6mo, Pro $39/mo 1M / 12mo, Scale $149/mo 10M / 24mo), session replay opt-in with 5 strategies (off/all/sampled/url_scoped/errors_only), per-user PostHog teams via admin sidecar (iron-clad isolation), MCP-side sourcemap unmangling, `/agentry.md` as canonical agent doc.
+
+**Next:**
+  - Publish `@agentrysh/mcp@0.0.11` to npm (version bumped, build done, not yet published).
+  - Master Personal API Key scope expansion on PostHog (operator action) to unlock MCP tools for feature_flag/cohort/survey/session_recording.
+
+---
+
+## Pre-existing typecheck noise
+
+`apps/api` `npm run typecheck` reports unrelated errors in `src/webhooks.ts` (Drizzle dual-package types) and test files referencing `matchesAny`/`withEncKey` (interrupted refactor symbols). These predate the 2026-05-15 changes and don't affect the runtime — all 42 `api.test.ts` tests pass and `wrangler dev` builds clean. Should be cleaned up in a follow-up.
+
+---
 
 ## Quickstart for the human (you, when you're back)
 

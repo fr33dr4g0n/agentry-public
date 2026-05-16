@@ -75,12 +75,13 @@ describe("discovery", () => {
   it("GET / returns metadata json", async () => {
     const res = await call("/");
     expect(res.status).toBe(200);
-    const json = (await res.json()) as { name: string; docs: string };
+    const json = (await res.json()) as { name: string; docs: string; install_docs: string };
     expect(json.name).toBe("agentry");
     expect(json.docs).toBe("/agentry.md");
+    expect(json.install_docs).toBe("/agentry-install.md");
   });
 
-  it("GET /agentry.md returns text/markdown with the canonical doc", async () => {
+  it("GET /agentry.md returns the lean reference (no install boilerplate)", async () => {
     const res = await call("/agentry.md");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type") ?? "").toContain("text/markdown");
@@ -90,9 +91,49 @@ describe("discovery", () => {
     // Spot-check the no-magic section + the API surface block exist.
     expect(txt).toContain("data plane");
     expect(txt).toContain("compute plane");
+    // Public-key feature should be documented in the lean reference.
+    expect(txt).toContain("agp_");
+    expect(txt).toContain("agentry_publish_query");
+    // Three-token clarification table.
+    expect(txt).toContain("Three tokens");
+    expect(txt).toContain("agnt_<projectId>");
+    expect(txt).toContain("Blast radius");
+    // Install-flow detail moved out — points at the install handbook.
+    expect(txt).toContain("/agentry-install.md");
+    // And the 12-step heading itself should NOT appear here.
+    expect(txt).not.toContain("The install flow (12 steps");
+    // New PostHog CRUD tools are in the MCP tool table.
+    expect(txt).toContain("agentry_create_feature_flag");
+    expect(txt).toContain("agentry_list_session_replays");
   });
 
-  it("GET /llms.txt still serves the same doc as a back-compat alias", async () => {
+  it("GET /agentry-install.md returns the install + ops handbook", async () => {
+    const res = await call("/agentry-install.md");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type") ?? "").toContain("text/markdown");
+    const txt = await res.text();
+    expect(txt).toContain("install");
+    // The 12-step install flow lives here, not in the lean reference.
+    expect(txt).toContain("The install flow (12 steps");
+    expect(txt).toContain("wire_errors");
+    expect(txt).toContain("verify_install");
+    // So do the ops sections (sourcemaps, session replay, webhooks, recipes,
+    // privacy disclosure) — those are install/ops, not day-to-day reference.
+    expect(txt).toContain("Sourcemaps");
+    expect(txt).toContain("Session replay");
+    expect(txt).toContain("Webhooks");
+    expect(txt).toContain("Recipes");
+    expect(txt).toContain("Privacy disclosure");
+    // PostHog feature CRUD sections (flags, cohorts, surveys, replay
+    // retrieval) all live in the install + ops doc.
+    expect(txt).toContain("Feature flags");
+    expect(txt).toContain("Cohorts");
+    expect(txt).toContain("Surveys");
+    expect(txt).toContain("agentry_create_feature_flag");
+    expect(txt).toContain("agentry_list_session_replays");
+  });
+
+  it("GET /llms.txt still serves the lean reference as a back-compat alias", async () => {
     const res = await call("/llms.txt");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type") ?? "").toContain("text/plain");

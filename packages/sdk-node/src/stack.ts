@@ -1,4 +1,4 @@
-import type { StackFrame } from "@agentry/shared";
+import type { StackFrame } from "@agentrysh/shared";
 
 // Match V8-style stack frames:
 //   "    at functionName (file:line:col)"

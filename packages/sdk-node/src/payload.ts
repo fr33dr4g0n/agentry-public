@@ -1,4 +1,4 @@
-import type { IngestEventPayload, StackFrame } from "@agentry/shared";
+import type { IngestEventPayload, StackFrame } from "@agentrysh/shared";
 import { parseStack } from "./stack.js";
 
 export interface CaptureContext {

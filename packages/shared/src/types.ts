@@ -77,6 +77,11 @@ export interface CaseDetail extends CaseSummary {
 export interface AgentryConfig {
   server_url: string;
   api_key: string | null;
+  /** Public-dashboard key (agp_…). Auto-minted at login alongside api_key.
+   *  Safe to embed in public-facing pages — only auths
+   *  /v1/public/q/<publication_id>?key=agp_… and only for publications the
+   *  user explicitly created via agentry_publish_query. */
+  public_api_key?: string | null;
   default_project_id: string | null;
   projects: Record<string, AgentryProjectConfig>;
 }

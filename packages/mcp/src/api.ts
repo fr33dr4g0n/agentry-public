@@ -22,6 +22,12 @@ export interface ApiError extends Error {
 export interface LoginResponse {
   status: "ok";
   api_key: string;
+  /** Public dashboard key (agp_…). Returned on first login or first login
+   *  after the migration that added the kind=public row. May be a redacted
+   *  placeholder if the user already had a public key (rotate via
+   *  agentry_rotate_public_key — coming). */
+  public_api_key?: string;
+  public_api_key_prefix?: string;
   user_id: string;
   prefix: string;
   github?: {
@@ -110,12 +116,12 @@ export async function apiFetch<T>(
   const url = opts.absoluteUrl ?? `${cfg.server_url.replace(/\/$/, "")}${pathOrUrl}`;
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "user-agent": "agentry-mcp/0.0.10",
+    "user-agent": "agentry-mcp/0.0.11",
   };
   if (!opts.skipAuth) {
     if (opts.dsnAuth) {
       headers["x-sentry-auth"] =
-        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.10`;
+        `Sentry sentry_version=7, sentry_key=${opts.dsnAuth}, sentry_client=agentry-mcp/0.0.11`;
     } else if (cfg.api_key) {
       headers["authorization"] = `Bearer ${cfg.api_key}`;
     }
@@ -227,6 +233,55 @@ export const api = {
       { body }
     );
   },
+  // Public-fetchable recipe publications. Owner-side; api-key auth.
+  publishQuery(
+    cfg: AgentryConfig,
+    projectId: string,
+    body: { recipe_id: string; params?: Record<string, unknown>; description?: string },
+  ): Promise<{
+    id: string;
+    project_id: string;
+    recipe_id: string;
+    params: Record<string, unknown>;
+    description: string | null;
+    public_url: string;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/public-queries`,
+      { body },
+    );
+  },
+  listPublications(
+    cfg: AgentryConfig,
+    projectId: string,
+  ): Promise<{
+    project_id: string;
+    count: number;
+    publications: Array<{
+      id: string;
+      recipe_id: string;
+      params: Record<string, unknown> | undefined;
+      description: string | null;
+      created_at: number;
+      last_used_at: number | null;
+      public_url: string;
+    }>;
+  }> {
+    return apiFetch(cfg, `/v1/projects/${encodeURIComponent(projectId)}/public-queries`);
+  },
+  revokePublication(
+    cfg: AgentryConfig,
+    projectId: string,
+    publicationId: string,
+  ): Promise<{ id: string; revoked: boolean; next_action: string }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/public-queries/${encodeURIComponent(publicationId)}`,
+      { method: "DELETE" },
+    );
+  },
   // PostHog per-user feature config: session replay today, more coming as
   // master Personal API Key scopes expand.
   configureSessionReplay(
@@ -265,6 +320,245 @@ export const api = {
     return apiFetch(
       cfg,
       `/v1/projects/${encodeURIComponent(projectId)}/posthog/session-replay/status`,
+    );
+  },
+  // --- PostHog per-user-team CRUD: feature flags, cohorts, surveys, replays.
+  // All endpoints wrap PostHog's REST API behind the master Personal API Key
+  // + per-user team_id (server-side enforced). Master-key scope expansion
+  // landed 2026-05-15; before that these returned 403.
+  listFeatureFlags(
+    cfg: AgentryConfig,
+    projectId: string,
+    opts: { limit?: number } = {},
+  ): Promise<{
+    team_id: number;
+    flags: Array<Record<string, unknown>>;
+    count: number;
+    web_ui_url: string;
+    next_action: string;
+  }> {
+    const qs = opts.limit ? `?limit=${opts.limit}` : "";
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/feature-flags${qs}`,
+    );
+  },
+  getFeatureFlag(
+    cfg: AgentryConfig,
+    projectId: string,
+    flagId: string,
+  ): Promise<{ team_id: number; flag: Record<string, unknown>; web_ui_url: string }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/feature-flags/${encodeURIComponent(flagId)}`,
+    );
+  },
+  createFeatureFlag(
+    cfg: AgentryConfig,
+    projectId: string,
+    body: {
+      key: string;
+      name?: string;
+      active?: boolean;
+      rollout_percentage?: number;
+      filters?: Record<string, unknown>;
+    },
+  ): Promise<{
+    team_id: number;
+    flag: Record<string, unknown>;
+    web_ui_url: string;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/feature-flags`,
+      { body },
+    );
+  },
+  updateFeatureFlag(
+    cfg: AgentryConfig,
+    projectId: string,
+    flagId: string,
+    body: {
+      active?: boolean;
+      name?: string;
+      rollout_percentage?: number;
+      filters?: Record<string, unknown>;
+    },
+  ): Promise<{ team_id: number; flag: Record<string, unknown> }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/feature-flags/${encodeURIComponent(flagId)}`,
+      { method: "PATCH", body },
+    );
+  },
+  deleteFeatureFlag(
+    cfg: AgentryConfig,
+    projectId: string,
+    flagId: string,
+  ): Promise<{ team_id: number; deleted: string; soft: boolean }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/feature-flags/${encodeURIComponent(flagId)}`,
+      { method: "DELETE" },
+    );
+  },
+  listCohorts(
+    cfg: AgentryConfig,
+    projectId: string,
+  ): Promise<{
+    team_id: number;
+    cohorts: Array<Record<string, unknown>>;
+    count: number;
+    web_ui_url: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/cohorts`,
+    );
+  },
+  getCohort(
+    cfg: AgentryConfig,
+    projectId: string,
+    cohortId: string,
+  ): Promise<{ team_id: number; cohort: Record<string, unknown>; web_ui_url: string }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/cohorts/${encodeURIComponent(cohortId)}`,
+    );
+  },
+  createCohort(
+    cfg: AgentryConfig,
+    projectId: string,
+    body:
+      | { name: string; event: string; days?: number }
+      | { name: string; groups: Array<Record<string, unknown>> },
+  ): Promise<{
+    team_id: number;
+    cohort: Record<string, unknown>;
+    web_ui_url: string;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/cohorts`,
+      { body },
+    );
+  },
+  deleteCohort(
+    cfg: AgentryConfig,
+    projectId: string,
+    cohortId: string,
+  ): Promise<{ team_id: number; deleted: string; soft: boolean }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/cohorts/${encodeURIComponent(cohortId)}`,
+      { method: "DELETE" },
+    );
+  },
+  listSurveys(
+    cfg: AgentryConfig,
+    projectId: string,
+  ): Promise<{
+    team_id: number;
+    surveys: Array<Record<string, unknown>>;
+    count: number;
+    web_ui_url: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/surveys`,
+    );
+  },
+  getSurvey(
+    cfg: AgentryConfig,
+    projectId: string,
+    surveyId: string,
+  ): Promise<{
+    team_id: number;
+    survey: Record<string, unknown>;
+    web_ui_url: string;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/surveys/${encodeURIComponent(surveyId)}`,
+    );
+  },
+  createSurvey(
+    cfg: AgentryConfig,
+    projectId: string,
+    body: {
+      name: string;
+      type?: "popover" | "widget" | "button" | "api";
+      question?: string;
+      question_type?: "open" | "rating" | "single_choice" | "multiple_choice" | "link";
+      questions?: Array<Record<string, unknown>>;
+      description?: string;
+      linked_flag_id?: number;
+      targeting_flag_id?: number;
+      conditions?: Record<string, unknown>;
+      appearance?: Record<string, unknown>;
+      start_date?: string;
+    },
+  ): Promise<{
+    team_id: number;
+    survey: Record<string, unknown>;
+    web_ui_url: string;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/surveys`,
+      { body },
+    );
+  },
+  deleteSurvey(
+    cfg: AgentryConfig,
+    projectId: string,
+    surveyId: string,
+  ): Promise<{ team_id: number; deleted: string }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/surveys/${encodeURIComponent(surveyId)}`,
+      { method: "DELETE" },
+    );
+  },
+  listSessionReplays(
+    cfg: AgentryConfig,
+    projectId: string,
+    opts: { distinctId?: string; dateFrom?: string; dateTo?: string; limit?: number } = {},
+  ): Promise<{
+    team_id: number;
+    recordings: Array<Record<string, unknown>>;
+    has_next: boolean;
+    web_ui_url: string;
+    next_action: string;
+  }> {
+    const params = new URLSearchParams();
+    if (opts.distinctId) params.set("distinct_id", opts.distinctId);
+    if (opts.dateFrom) params.set("date_from", opts.dateFrom);
+    if (opts.dateTo) params.set("date_to", opts.dateTo);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/session-replays${qs}`,
+    );
+  },
+  getSessionReplay(
+    cfg: AgentryConfig,
+    projectId: string,
+    replayId: string,
+  ): Promise<{
+    team_id: number;
+    recording: Record<string, unknown>;
+    player_url: string;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/session-replays/${encodeURIComponent(replayId)}`,
     );
   },
   // Idempotent recovery for first-login PostHog provisioning failures. If
@@ -343,7 +637,7 @@ export const api = {
       headers: {
         authorization: `Bearer ${publicKey}`,
         "content-type": "application/json",
-        "user-agent": "agentry-mcp/0.0.10",
+        "user-agent": "agentry-mcp/0.0.11",
       },
       body: opts.body,
     });

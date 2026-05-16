@@ -16,14 +16,31 @@
 // compares with constant-time equality. If mismatch, reject the request.
 
 import { eq, sql } from "drizzle-orm";
-import { base64url, sha256Hex, uuidv7 } from "@agentry/shared";
+import { base64url, sha256Hex, uuidv7 } from "@agentrysh/shared";
 import { webhooks, type Webhook } from "@agentry/db/schema";
 import type { Env } from "./env.js";
 import { getDb } from "./db.js";
 
-export type WebhookEvent = "case.created" | "case.resolved" | "deploy.recorded";
+// Free-form event identifier. Server-emitted events use dotted namespaces
+// (case.created, case.resolved, case.investigating, case.spurious, case.ignored,
+// case.reopened, deploy.recorded, alert.triggered, alert.recovered).
+// Analytics events use whatever name the customer's app emits (signup_completed,
+// purchase, etc.) — the substrate doesn't curate them.
+export type WebhookEvent = string;
 
-export const ALL_EVENTS: WebhookEvent[] = ["case.created", "case.resolved", "deploy.recorded"];
+// Documented server-emitted events. Not exhaustive — analytics event names
+// add to this set at runtime. Surfaced to agents via agentry_list_event_names.
+export const SERVER_EVENTS: readonly string[] = [
+  "case.created",
+  "case.resolved",
+  "case.investigating",
+  "case.spurious",
+  "case.ignored",
+  "case.reopened",
+  "deploy.recorded",
+  "alert.triggered",
+  "alert.recovered",
+] as const;
 
 const DELIVERY_TIMEOUT_MS = 5_000;
 
@@ -59,6 +76,7 @@ export async function signBody(body: string, secret: string): Promise<string> {
 
 interface DeliverOptions {
   webhook: Webhook;
+  event: string;      // canonical event name, e.g. "case.created"
   body: string;       // pre-serialized; we sign exactly what we send
   secretRaw: string;  // unhashed; only available right after creation
 }
@@ -77,7 +95,7 @@ async function deliverOne(env: Env, opts: DeliverOptions): Promise<void> {
         "content-type": "application/json",
         "user-agent": "agentry-webhook/0",
         "x-agentry-signature": `t=${ts},v1=${sig}`,
-        "x-agentry-event": new (URL as unknown as new (s: string) => URL)(opts.webhook.url).host,
+        "x-agentry-event": opts.event,
         "x-agentry-webhook-id": opts.webhook.id,
       },
       body: opts.body,
@@ -161,6 +179,18 @@ export async function persistWebhook(
     .where(eq(webhooks.id, input.id));
 }
 
+// Match a single event against a list of subscriptions. Supports:
+//   "foo"        — exact
+//   "*"          — everything
+//   "case.*"     — namespace prefix (matches case.created, case.resolved, etc.)
+export function matchesAny(subscriptions: string[], event: string): boolean {
+  for (const s of subscriptions) {
+    if (s === "*" || s === event) return true;
+    if (s.endsWith(".*") && event.startsWith(s.slice(0, -1))) return true;
+  }
+  return false;
+}
+
 async function recoverSigningSecret(env: Env, hookRow: Webhook): Promise<string | null> {
   const parts = hookRow.signingSecretHash.split("::");
   if (parts.length !== 3) return null;
@@ -210,17 +240,19 @@ export async function fireWebhooks(
   const tasks: Array<Promise<void>> = [];
   for (const w of rows) {
     if (!opts.webhookId) {
-      // Filter on subscribed events
+      // Filter on subscribed events. Supports exact match, "*" (everything),
+      // and "prefix.*" (e.g. "case.*" matches case.created, case.resolved, ...).
+      let subs: string[];
       try {
-        const events = JSON.parse(w.events) as string[];
-        if (!events.includes(event)) continue;
+        subs = JSON.parse(w.events) as string[];
       } catch {
         continue;
       }
+      if (!matchesAny(subs, event)) continue;
     }
     const secret = await recoverSigningSecret(env, w);
     if (!secret) continue;
-    tasks.push(deliverOne(env, { webhook: w, body: payload, secretRaw: secret }));
+    tasks.push(deliverOne(env, { webhook: w, event, body: payload, secretRaw: secret }));
   }
 
   const all = Promise.allSettled(tasks);

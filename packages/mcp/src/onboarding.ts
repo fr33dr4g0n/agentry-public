@@ -1,7 +1,7 @@
 // Compute structured onboarding hints for the agent.
 // agentry_status pipes this through; tools also return individual hints.
 
-import type { AgentryConfig } from "@agentry/shared";
+import type { AgentryConfig } from "@agentrysh/shared";
 
 export type OnboardingState = "no_key" | "no_project" | "needs_install" | "ready";
 

@@ -1,15 +1,14 @@
 import { Hono } from "hono";
 import { eq } from "drizzle-orm";
-import { errors, uuidv7 } from "@agentry/shared";
+import { errors, uuidv7 } from "@agentrysh/shared";
 import { webhooks } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey, requireProjectAccess } from "../middleware.js";
 import {
-  ALL_EVENTS,
+  SERVER_EVENTS,
   fireWebhooks,
   mintSigningSecret,
   persistWebhook,
-  type WebhookEvent,
 } from "../webhooks.js";
 import { isPosthogConfigured } from "../posthog.js";
 import type { AppBindings } from "../env.js";
@@ -45,13 +44,24 @@ router.post("/v1/projects/:project_id/webhooks", async (c) => {
   if (!url || !/^https?:\/\//.test(url)) {
     throw errors.invalidPayload({ reason: "url is required and must be http(s)" });
   }
-  const events = Array.isArray(b?.events) ? (b.events as unknown[]) : ALL_EVENTS;
-  const filtered = events.filter((e): e is WebhookEvent =>
-    typeof e === "string" && (ALL_EVENTS as string[]).includes(e),
-  );
+  // Free-form: any non-empty string is a valid subscription. Wildcards "*" and
+  // "prefix.*" are supported. Server-emitted names (case.*, deploy.recorded,
+  // alert.*) are listed in SERVER_EVENTS for discovery; analytics event names
+  // are whatever the customer emits.
+  const eventsRaw = Array.isArray(b?.events) ? (b.events as unknown[]) : [];
+  const filtered: string[] = [];
+  for (const e of eventsRaw) {
+    if (typeof e !== "string") continue;
+    const trimmed = e.trim().slice(0, 200);
+    if (trimmed.length > 0) filtered.push(trimmed);
+  }
   if (filtered.length === 0) {
     throw errors.invalidPayload({
-      reason: `events must include at least one of ${ALL_EVENTS.join(", ")}`,
+      reason:
+        "events must be a non-empty array of strings. " +
+        `Server-emitted names: ${SERVER_EVENTS.join(", ")}. ` +
+        "Analytics event names are also subscribable (signup_completed, purchase, etc.). " +
+        "Wildcards: \"*\" matches all events, \"case.*\" matches the case namespace.",
     });
   }
   const description = typeof b?.description === "string" ? b.description.slice(0, 500) : null;

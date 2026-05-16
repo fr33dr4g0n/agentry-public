@@ -7,13 +7,15 @@ import {
   parseDsn,
   sha256Hex,
   uuidv7,
-} from "@agentry/shared";
-import type { IngestEvent, StackFrame } from "@agentry/shared";
+} from "@agentrysh/shared";
+import type { IngestEvent, StackFrame } from "@agentrysh/shared";
 import { cases, events, projects, suppressionEntries } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { matchesPattern } from "./cases.js";
 import { fireWebhooks } from "../webhooks.js";
 import { incrementUsage } from "../usage.js";
+import { waitUntilOf } from "../middleware.js";
+import { coerceErrorBody } from "../error-coerce.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -27,14 +29,16 @@ const router = new Hono<AppBindings>();
 // `<token>` may be either the full DSN raw value (`agnt_<projectId>.<token>`)
 // or just the token portion. We hash and look up against projects.dsnHash.
 
-router.post("/store/:project_id/", async (c) => {
-  return handleIngest(c);
-});
+// First-party path. A "log" is any structured event with a name/message/stack —
+// errors are a subset (logs that have stack traces). Logs with a fingerprintable
+// shape get grouped into Cases automatically.
+router.post("/logs/:project_id/", async (c) => handleIngest(c));
+router.post("/logs/:project_id", async (c) => handleIngest(c));
 
-// Some SDKs post without trailing slash.
-router.post("/store/:project_id", async (c) => {
-  return handleIngest(c);
-});
+// Sentry-protocol drop-in alias. Lets existing Sentry SDKs point at agentry
+// without code changes — kept as a documented feature, not a rename leftover.
+router.post("/store/:project_id/", async (c) => handleIngest(c));
+router.post("/store/:project_id", async (c) => handleIngest(c));
 
 async function handleIngest(c: Context<AppBindings>) {
   // Hard cap body size before parsing JSON. Default 256KB.
@@ -43,7 +47,7 @@ async function handleIngest(c: Context<AppBindings>) {
   if (cl) {
     const n = Number(cl);
     if (Number.isFinite(n) && n > maxBytes) {
-      throw new (errors.invalidPayload({}).constructor as typeof import("@agentry/shared").AgentryError)({
+      throw new (errors.invalidPayload({}).constructor as typeof import("@agentrysh/shared").AgentryError)({
         status: 413,
         code: "payload_too_large",
         message: `Body exceeds the ${maxBytes}-byte ingest limit.`,
@@ -96,7 +100,11 @@ async function handleIngest(c: Context<AppBindings>) {
   } catch {
     throw errors.invalidPayload({ reason: "body is not valid JSON" });
   }
-  const parsed = IngestEventSchema.safeParse(body);
+  // Coerce {name, message, stack} bare-shape (used by every install-guide
+  // language helper and any raw-HTTP caller) into Sentry-envelope shape so the
+  // rest of the pipeline (fingerprinting, error_type extraction) is uniform.
+  const coerced = coerceErrorBody(body);
+  const parsed = IngestEventSchema.safeParse(coerced);
   if (!parsed.success) {
     throw errors.invalidPayload({ zod: parsed.error.flatten() });
   }
@@ -238,8 +246,7 @@ async function handleIngest(c: Context<AppBindings>) {
   // Fire webhooks for case.created (new fingerprints only). waitUntil keeps
   // delivery off the request critical path.
   if (isNewCase) {
-    const waitUntil = (p: Promise<unknown>) =>
-      c.executionCtx?.waitUntil ? c.executionCtx.waitUntil(p) : void p.catch(() => {});
+    const waitUntil = waitUntilOf(c);
     await fireWebhooks(
       c.env,
       projectId,

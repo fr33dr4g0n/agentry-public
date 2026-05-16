@@ -4,6 +4,119 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-15 (night, late) — PostHog CRUD MCP tools (feature flags / cohorts / surveys / replays) + three-token doc clarification
+
+**Problem.** Two related gaps. (1) Earlier rounds shipped session-replay
+*configuration* MCP tools but no retrieval, and shipped no MCP for feature
+flags / cohorts / surveys at all — they were documented as "MCP coming
+once we expand master-key scope". The scope was expanded today and the
+tools were never built. (2) Docs presented agentry as a two-key system
+(`agk_` private + `agp_` public dashboard), but in practice SPAs ship a
+third token — the project DSN (`agnt_<projectId>.<token>`) — for ingest.
+A user reading the lean reference could miss that the DSN is the safe
+key for client bundles and worry whether the private key leaks.
+
+**Decisions.**
+
+1. **Ship the 15 deferred MCP tools.** New routes file
+   `apps/api/src/routes/posthog-features.ts` exposes per-team CRUD:
+   `feature-flags` (list/get/create/update/delete),
+   `cohorts` (list/get/create/delete),
+   `surveys` (list/get/create/delete),
+   `session-replays` (list/get).
+   Each route requires `agk_` Bearer + project_id; the team_id is derived
+   server-side from the user. PostHog's master Personal API Key (`phx_…`,
+   rotated to `*` scope on 2026-05-15) does the actual call. Per-user team
+   isolation is enforced by PostHog itself — the master key authenticates,
+   the team_id in the URL scopes.
+
+   Tool shapes match an agent's mental model:
+   - Feature flags: simple `{key, rollout_percentage}` AND advanced raw
+     `filters` (PostHog's property-targeted / multivariate / cohort-scoped
+     filter object).
+   - Cohorts: simple `{name, event, days?}` AND advanced raw `groups`.
+   - Surveys: quick `{name, question, question_type?}` AND multi-question
+     `questions: [...]`. Created in draft — agent passes `start_date` (ISO)
+     to launch.
+   - Session replays: filter by `distinct_id` (e.g. from a case's
+     affected_users) + date range. Returns `player_url` for one-click view.
+
+   Generic `posthogTeamApi<T>(env, userId, pathSuffix, opts)` helper in
+   `posthog.ts` keeps the routes terse and ensures all of them go through
+   the same auth + timeout + error surface.
+
+2. **Three-token clarification table in `/agentry.md`.** Replaced the
+   "Two API keys" section with a Three-token table laying out `agk_` /
+   `agp_` / `agnt_<projectId>.<token>` side-by-side: format, what each
+   auths, whether safe in SPA bundle, where to mint/rotate, blast radius
+   if leaked. Makes unmissable that the DSN (not `agk_`) is what SPAs
+   bundle for ingest.
+
+**Why both at once.** The token clarification is a small text change; the
+PostHog CRUD is a larger feature; but the agent reads `/agentry.md` cold
+and decides what to do next, so the MCP tool table needs the 15 new
+tools at the same time the table format changes. Doing both in one round
+keeps the lean reference and the MCP package in lockstep — a property the
+user explicitly asked for ("these need to mirror each other").
+
+**Test posture.** `apps/api/test/api.test.ts` now asserts the lean
+reference contains "Three tokens", "agnt_<projectId>", "Blast radius",
+`agentry_create_feature_flag`, `agentry_list_session_replays`; and that
+`/agentry-install.md` contains the per-resource feature-flag / cohort /
+survey tables. MCP snapshot test updated with all 15 new tool names.
+
+**Live verification.** New master key (`phx_…wNWD9LDGn63d…`) curl-checked
+against PostHog `/api/projects/@current/{feature_flags,cohorts,surveys,
+session_recordings}/` returns 200 on each. Deployed Worker version
+`e009fd4c-f5d0-4f48-8a32-60f314356b37`.
+
+---
+
+## 2026-05-15 (night) — Split agentry.md into lean reference + install handbook
+
+**Problem.** `/agentry.md` had grown to ~400 lines: install flow, session replay strategies, sourcemap deep dive, feature-flag status, webhook templates, recipe catalog, privacy disclosure — all in one file. Every agent fetching it for day-to-day API reference was dragging along 200+ lines of install boilerplate it didn't need. Context-bloat after onboarding is a real cost in long-running agent sessions.
+
+**Decision.** Split into two endpoints:
+
+  - **`GET /agentry.md` — lean reference.** Canonical principle (data plane vs compute plane), two-prompt onboarding, signal types, cases, **two-key model (agk_ + agp_)**, the complete API surface, the full MCP tool table, error envelope, source pointers. ~280 lines.
+  - **`GET /agentry-install.md` — install + ops handbook.** 12-step install flow, sourcemap upload + unmangle, session-replay strategies, feature-flag/cohort/survey status, webhook templates, recipe catalog, public-dashboard publish flow, privacy-disclosure paste-ready clause. Fetched on demand during install or when wiring a new ops feature.
+
+`/llms.txt` still aliases `/agentry.md` (back-compat). The lean reference opens with an admonition pointing first-time installers at `/agentry-install.md`. The `/` discovery JSON now returns both URLs (`docs` + `install_docs`).
+
+**Why this design.** An agent's context budget should hold the bits relevant to its current task. The 12-step install is one-shot — once a project is wired, those tokens are dead weight. The lean reference also fits more comfortably alongside other system prompts. Splitting also lets us evolve the install flow (e.g. new steps, new framework detection) without churning the reference doc that every agent invocation reads.
+
+**Why HTTP-served instead of a static `agentry-install.md` on the web origin.** Single source of truth: the install steps are tied to the API surface (which lives on the Worker). Serving both from `api.agentry.sh` means a single deploy updates both. The Pages `_redirects` 302s `agentry.sh/agentry-install.md` → `api.agentry.sh/agentry-install.md` so both hostnames work.
+
+**Tests.** `apps/api/test/api.test.ts` now asserts: (a) `/agentry.md` does NOT contain the 12-step heading, (b) `/agentry.md` DOES contain `agp_` + `agentry_publish_query` (lean reference must include the public-key surface since it's API + MCP, not install), (c) `/agentry-install.md` contains the 12-step install + sourcemaps + session-replay + webhooks + recipes + privacy sections, (d) `/llms.txt` still serves the lean reference.
+
+---
+
+## 2026-05-15 (evening, late) — Public dashboard key (`agp_…`) — Stripe-style publishable token
+
+**Problem.** Agents can already publish a recipe + params as a "dashboard view" (e.g. running totals for a status page). The blocker was auth: handing out the user's `agk_` private key to a public-facing page would give visitors full account access. Status pages and embedded charts need a token that's safe to ship in the bundle.
+
+**Decision.** Every account auto-mints TWO keys at first login:
+
+  - **Private (`agk_…`)** — day-to-day. Authenticates every authenticated endpoint via `Authorization: Bearer agk_…`. Same as before.
+  - **Public dashboard (`agp_…`)** — Stripe-style "publishable" key. Safe to embed in public-facing client code. ONLY authenticates `GET /v1/public/q/<publication_id>?key=agp_…` (the visitor-facing query-execution endpoint), and ONLY for publications the user has explicitly minted. No cases, no deploys, no raw events, no ad-hoc HogQL.
+
+The publish flow:
+
+  1. Agent runs `agentry_publish_query(project_id, recipe_id, params)`.
+  2. API mints a `publication_id`, binds the recipe + params, returns `embeddable_url`: `https://api.agentry.sh/v1/public/q/<publication_id>?key=agp_…`.
+  3. Anyone GET-ing that URL gets the recipe's rows. Open CORS — fetchable from any browser page.
+  4. Revoke via `agentry_revoke_publication`.
+
+**Schema.** Additive migration applied to prod Turso: `api_keys.kind` enum (`private`|`public`, defaults `private`), new index `(user_id, kind)`, new table `public_query_publications` (id, user_id, project_id, recipe_id, params_json, description, created_at, last_used_at, revoked_at). MCP persists `public_api_key` into local config alongside `api_key`; `persistKeyResponse` writes both.
+
+**Why Stripe's model.** Stripe's `pk_…` / `sk_…` split is the proven pattern for this exact problem. Two keys, sharp blast-radius for the public one, no clever capability-token gymnastics. Anyone reading the docs immediately understands.
+
+**Why ban arbitrary HogQL on the public surface.** A `agp_` key + ad-hoc HogQL is functionally equivalent to giving visitors read access to all events. Binding to a (recipe, params) tuple at publish time means the agent can't accidentally publish "all the things" — the recipe schema is reviewable, the params are explicit.
+
+**MCP tools.** `agentry_publish_query`, `agentry_list_publications`, `agentry_revoke_publication`. All in the lean `/agentry.md` reference's MCP tool table.
+
+---
+
 ## 2026-05-15 (evening) — Session replay opt-in + agent-driven strategy
 
 **Problem.** PostHog session replay is technically available on every per-user team (we self-host the full OSS stack), but eats significant storage. "Recording every session always" is the wrong default — it bankrupts disk for any non-trivial traffic.

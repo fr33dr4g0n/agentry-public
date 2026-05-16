@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { eq } from "drizzle-orm";
-import { errors, mintApiKey, uuidv7 } from "@agentrysh/shared";
+import { and, eq, isNull } from "drizzle-orm";
+import { errors, mintApiKey, mintPublicKey, uuidv7 } from "@agentrysh/shared";
 import { apiKeys, users } from "@agentry/db/schema";
 import { getDb } from "../db.js";
 import { requireApiKey } from "../middleware.js";
@@ -361,11 +361,46 @@ async function provisionUserAndMintKey(
   await db.insert(apiKeys).values({
     id: uuidv7(),
     userId,
+    kind: "private",
     prefix: minted.prefix,
     keyHash: minted.hash,
     name: "github-oauth",
     createdAt: Math.floor(Date.now() / 1000),
   });
+
+  // Mint the public dashboard key alongside the private api_key. Auto-
+  // generated at login so the user always has BOTH: agk_ for account
+  // operations, agp_ for public dashboards. The agp_ key is useless on its
+  // own — it only auths /v1/public/q/<publication_id>?key=agp_…, and
+  // publication_ids only exist for queries the user explicitly published.
+  // So this can be CI-committed / leak-tolerated without exposing data.
+  let publicKey: { raw: string; prefix: string };
+  // Re-use an existing un-revoked public key for this user if present
+  // (legacy users created before this feature get one minted lazily on
+  // first login after the migration).
+  const existingPublic = await db
+    .select()
+    .from(apiKeys)
+    .where(
+      and(eq(apiKeys.userId, userId), eq(apiKeys.kind, "public"), isNull(apiKeys.revokedAt)),
+    )
+    .limit(1);
+  if (existingPublic[0]) {
+    publicKey = { raw: "(redacted — already minted; rotate via agentry_rotate_public_key)",
+                  prefix: existingPublic[0].prefix };
+  } else {
+    const m = await mintPublicKey();
+    await db.insert(apiKeys).values({
+      id: uuidv7(),
+      userId,
+      kind: "public",
+      prefix: m.prefix,
+      keyHash: m.hash,
+      name: "github-oauth-public",
+      createdAt: Math.floor(Date.now() / 1000),
+    });
+    publicKey = { raw: m.raw, prefix: m.prefix };
+  }
 
   // Best-effort PostHog provisioning. If PostHog is unconfigured or unreachable,
   // we still hand back the API key and surface the failure as a `posthog`
@@ -393,6 +428,8 @@ async function provisionUserAndMintKey(
   return c.json({
     status: "ok",
     api_key: minted.raw,
+    public_api_key: publicKey.raw,
+    public_api_key_prefix: publicKey.prefix,
     user_id: userId,
     prefix: minted.prefix,
     github: {
@@ -403,9 +440,11 @@ async function provisionUserAndMintKey(
     },
     posthog,
     next_action:
-      "Store this api_key in ~/.agentry/config.json — it won't be shown again. " +
-      "Then call POST /v1/projects to create a project, then run agentry_install_guide " +
-      "for the comprehensive setup checklist.",
+      "Store BOTH keys in ~/.agentry/config.json — neither is shown again. " +
+      "api_key (agk_…) is your private credential — keep secret. " +
+      "public_api_key (agp_…) is safe to embed in public dashboards — it can only " +
+      "fetch queries you explicitly publish via agentry_publish_query. " +
+      "Then call POST /v1/projects to create a project, then run agentry_install_guide.",
   });
 }
 
