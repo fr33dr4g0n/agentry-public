@@ -11,6 +11,7 @@ import {
   updateTeamSettings,
 } from "../posthog.js";
 import { requireApiKey, requireProjectAccess } from "../middleware.js";
+import { audit } from "../audit.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -127,6 +128,15 @@ router.post(
     }
 
     const out = await updateTeamSettings(c.env, proj.userId, patch);
+    await audit(c, {
+      userId: proj.userId,
+      projectId: proj.id,
+      action: "session_replay.configured",
+      resourceType: "session_replay",
+      resourceId: String(out.teamId),
+      summary: `Session replay strategy = '${strategy}'`,
+      metadata: { strategy, sample_rate: sampleRate, retention_days: retentionDays, url_triggers: urlTriggers?.length ?? 0 },
+    });
     return c.json({
       team_id: out.teamId,
       strategy,

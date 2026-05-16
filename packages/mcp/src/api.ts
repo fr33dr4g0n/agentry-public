@@ -561,6 +561,146 @@ export const api = {
       `/v1/projects/${encodeURIComponent(projectId)}/session-replays/${encodeURIComponent(replayId)}`,
     );
   },
+  getReplaySnapshots(
+    cfg: AgentryConfig,
+    projectId: string,
+    replayId: string,
+    source?: "realtime" | "blob",
+  ): Promise<{
+    team_id: number;
+    replay_id: string;
+    snapshots: unknown;
+    next_action: string;
+  }> {
+    const qs = source ? `?source=${source}` : "";
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/session-replays/${encodeURIComponent(replayId)}/snapshots${qs}`,
+    );
+  },
+  evaluateFeatureFlag(
+    cfg: AgentryConfig,
+    projectId: string,
+    body: {
+      distinct_id: string;
+      key?: string;
+      person_properties?: Record<string, unknown>;
+      groups?: Record<string, string>;
+    },
+  ): Promise<{
+    team_id: number;
+    distinct_id: string;
+    key?: string;
+    value?: boolean | string | null;
+    payload?: unknown;
+    flags?: Record<string, boolean | string>;
+    payloads?: Record<string, unknown>;
+    enabled_count?: number;
+    next_action?: string | null;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/feature-flags/evaluate`,
+      { body },
+    );
+  },
+  getDistinctIdSummary(
+    cfg: AgentryConfig,
+    projectId: string,
+    distinctId: string,
+  ): Promise<{
+    project_id: string;
+    distinct_id: string;
+    person: unknown;
+    event_stats: { count: number; first_seen: string | null; last_seen: string | null };
+    recent_events: Array<{ event: string; timestamp: string }>;
+    recent_recordings: unknown[];
+    web_ui_url: string;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/users/${encodeURIComponent(distinctId)}/summary`,
+    );
+  },
+  getSurveyResponses(
+    cfg: AgentryConfig,
+    projectId: string,
+    surveyId: string,
+  ): Promise<{
+    team_id: number;
+    survey_id: string;
+    survey_name: string | null;
+    questions: Array<Record<string, unknown>>;
+    response_distribution: Array<{ response: string; count: number }>;
+    recent_responses: Array<{ ts: string; response: string }>;
+    total_recent: number;
+    web_ui_url: string;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/surveys/${encodeURIComponent(surveyId)}/responses`,
+    );
+  },
+  createAbTest(
+    cfg: AgentryConfig,
+    projectId: string,
+    body: {
+      name: string;
+      flag_key?: string;
+      success_event: string;
+      variants: Array<{ key?: string; name?: string; rollout_percentage?: number }>;
+    },
+  ): Promise<{
+    team_id: number;
+    ab_test: Record<string, unknown>;
+    conversion_query: string;
+    web_ui_url: string;
+    next_action: string;
+  }> {
+    return apiFetch(
+      cfg,
+      `/v1/projects/${encodeURIComponent(projectId)}/ab-tests`,
+      { body },
+    );
+  },
+  listRecentChanges(
+    cfg: AgentryConfig,
+    opts: {
+      hours?: number;
+      actionPrefix?: string;
+      resourceType?: string;
+      projectId?: string;
+      limit?: number;
+    } = {},
+  ): Promise<{
+    hours: number;
+    since: number;
+    count: number;
+    actions: Array<{
+      id: string;
+      at: number;
+      action: string;
+      resource_type: string;
+      resource_id: string | null;
+      project_id: string | null;
+      summary: string | null;
+      ip: string | null;
+      ua: string | null;
+      metadata: unknown;
+    }>;
+    next_action: string;
+  }> {
+    const params = new URLSearchParams();
+    if (opts.hours !== undefined) params.set("hours", String(opts.hours));
+    if (opts.actionPrefix) params.set("action_prefix", opts.actionPrefix);
+    if (opts.resourceType) params.set("resource_type", opts.resourceType);
+    if (opts.projectId) params.set("project_id", opts.projectId);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return apiFetch(cfg, `/v1/audit/recent${qs}`);
+  },
   // Idempotent recovery for first-login PostHog provisioning failures. If
   // PostHog was 503 at the moment the user logged in, the api_key was minted
   // but no analytics backend was attached → every /v1/track/ 503s with

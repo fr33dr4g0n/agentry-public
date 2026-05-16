@@ -299,6 +299,43 @@ export const feedback = sqliteTable("feedback", {
   kindIdx: index("feedback_kind_idx").on(t.kind, t.resolved, t.createdAt),
 }));
 
+// Audit log of agent-driven mutations. Append-only. Every mutating route
+// (publication mint/revoke, feature flag / cohort / survey create-update-delete,
+// session-replay reconfigure) writes one row before returning success. Lets
+// the user see "what did the agent do in the last 24h" via the
+// agentry_recent_changes MCP tool. Storage is bounded by the cron in
+// apps/api/src/usage.ts (or a follow-up cron) that deletes rows older than 90d.
+//
+// Schema is intentionally generic: action_type is a free string like
+// "feature_flag.created", "publication.minted", "session_replay.configured".
+// Resource_type + resource_id let the agent filter by what got touched.
+export const auditLog = sqliteTable("audit_log", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  projectId: text("project_id").references(() => projects.id, { onDelete: "set null" }),
+  // "feature_flag.created" | "feature_flag.updated" | "feature_flag.deleted"
+  // "cohort.created" | "cohort.deleted"
+  // "survey.created" | "survey.deleted"
+  // "publication.minted" | "publication.revoked"
+  // "session_replay.configured"
+  action: text("action").notNull(),
+  // "feature_flag" | "cohort" | "survey" | "publication" | "session_replay"
+  resourceType: text("resource_type").notNull(),
+  // PostHog id (numeric, stringified) for PostHog resources; uuid for agentry resources.
+  resourceId: text("resource_id"),
+  // Free-form one-line summary for the agent to display.
+  summary: text("summary"),
+  // Optional context: incoming IP + UA, request payload digest, etc.
+  metadataJson: text("metadata_json"),
+  ip: text("ip"),
+  ua: text("ua"),
+  at: integer("at").notNull().default(now),
+}, (t) => ({
+  userTimeIdx: index("audit_user_time_idx").on(t.userId, t.at),
+  projTimeIdx: index("audit_proj_time_idx").on(t.projectId, t.at),
+  actionIdx: index("audit_action_idx").on(t.userId, t.action, t.at),
+}));
+
 export type User = typeof users.$inferSelect;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type Project = typeof projects.$inferSelect;
@@ -313,3 +350,4 @@ export type UsageCounter = typeof usageCounters.$inferSelect;
 export type UsageSnapshot = typeof usageSnapshots.$inferSelect;
 export type Alert = typeof alerts.$inferSelect;
 export type Feedback = typeof feedback.$inferSelect;
+export type AuditLog = typeof auditLog.$inferSelect;

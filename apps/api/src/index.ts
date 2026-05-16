@@ -23,6 +23,7 @@ import sourcemapRoutes from "./routes/sourcemaps.js";
 import posthogConfigRoutes from "./routes/posthog-config.js";
 import posthogFeaturesRoutes from "./routes/posthog-features.js";
 import publicQueriesRoutes, { publicRouter as publicQueryRunner } from "./routes/public-queries.js";
+import auditRoutes from "./routes/audit.js";
 import { snapshotAllUsers } from "./usage.js";
 import type { AppBindings, Env } from "./env.js";
 
@@ -190,8 +191,11 @@ export function createApp() {
   // Owner-side publish/list/revoke (api-key auth).
   app.route("/", publicQueriesRoutes);
 
-  // Visitor-side execution — open CORS, agp_ key in query param.
+  // Visitor-side execution — open CORS, agp_ key in query param, rate-limited.
   app.route("/", publicQueryRunner);
+
+  // Audit log of agent-driven mutations (api-key auth).
+  app.route("/", auditRoutes);
 
   return app;
 }

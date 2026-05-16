@@ -4,6 +4,35 @@ Append-only. Newest at top.
 
 ---
 
+## 2026-05-16 (~02:30 UTC) — Audit log, rate limit, 5 agent-shortcut tools, EU data residency disclosure
+
+**Context.** After shipping the three-token doc + 15 PostHog CRUD tools earlier in the day, I gave the user a punch list of gaps and improvements. The user asked to ship all of them and specifically asked the audit-log read tool to accept a configurable `hours` parameter (default 24, allow 48 / 72 / etc.).
+
+**Decisions:**
+
+1. **Audit log = append-only `audit_log` table** with (user_id, project_id?, action, resource_type, resource_id, summary, metadata_json, ip, ua, at). All 9 mutating handlers across feature flags / cohorts / surveys / publications / session-replay-config / A/B-tests write one row before returning success. Writes never block — wrapped in try/catch, errors logged but observability never breaks user-visible operations. Read endpoint `GET /v1/audit/recent?hours=24` accepts `hours` 1..720, plus `action_prefix` + `resource_type` + `project_id` + `limit` (max 500). MCP tool `agentry_recent_changes` mirrors.
+
+2. **Rate limit on `/v1/public/q/*`** = in-isolate token bucket keyed on (publication_id, client_ip), 60 capacity / 1 token-per-second refill. Per-isolate (not per-edge — Workers globals persist for the isolate lifetime which is minutes-to-hours, plenty to break a single-source attacker's loop). KV/DO would add cost-per-request without proportional benefit for this threat model. 429 with `Retry-After` header on exceed. GC drops idle buckets every minute (10 min idle TTL).
+
+3. **5 high-value agent shortcuts:**
+   - `agentry_evaluate_feature_flag(distinct_id, key?)` calls PostHog's `/decide/?v=3` with the team's public write key (not master) — same endpoint clients hit at runtime. Returns one flag value if `key` given, otherwise the map of all active flags for that user.
+   - `agentry_get_distinct_id_summary(distinct_id)` is a fan-out: PostHog persons lookup + 2 HogQL queries (stats + recent events) + recordings list. Composed in the API to keep the tool's response shape stable and save 3+ MCP round trips. Each branch is wrapped in try/catch — if one fails (e.g. recordings off), the rest still returns.
+   - `agentry_survey_responses(survey_id)` runs a fixed HogQL pair (distribution + recent free-text) plus pulls the survey definition for choice labels. Caller doesn't need to know `$survey_response` property unpacking.
+   - `agentry_create_ab_test({name, success_event, variants})` mints a multivariate PostHog feature flag (auto-split rollout if not specified, must sum to 100) AND returns the bound conversion HogQL string. The agent feeds the query into `agentry_analytics_query` on a schedule.
+   - `agentry_get_replay_snapshots(replay_id, source?)` thin wrap of PostHog's `/session_recordings/<id>/snapshots/`. Returns rrweb-format DOM events for programmatic "what did the user click before the error" reconstruction.
+
+4. **EU data residency disclosure** — `/v1/privacy/disclosure` now returns a `data_residency` block: PostHog self-hosted on Hetzner Falkenstein, Cloudflare Workers + Turso for error events, R2 for sourcemaps, TLS 1.3 end-to-end. Paste-ready markdown clause includes the section.
+
+5. **SDK package cleanup** — `packages/sdk-node` and `packages/sdk-browser` deleted. agentry has no SDK by design; the install flow generates a 25-line fetch helper. The unpublished packages confused contributors looking at the repo.
+
+**Why audit-log row writes are best-effort, not transactional.** The mutation already succeeded against PostHog at the time the audit write happens. If we waited on the audit write before responding to the user, every audit-log DB hiccup would surface as a user-visible "PostHog call worked but agentry failed" error. Worse: the user might retry, doubling up the underlying mutation. Audit data is observability; it's allowed to be slightly lossy. The audit write is wrapped in try/catch and logs on failure for ops monitoring.
+
+**Why in-isolate rate limit, not Cloudflare's WAF / native rate limiter.** Two reasons: (1) source-controlled — visible in the repo, testable, no UI config to forget about. (2) per-isolate persistence covers the realistic threat (a script looping from one source). Distributed coordination across colos isn't worth the complexity — an attacker spreading across colos is *good* for us, they're literally spreading their cost across our infra. The bucket-per-(publication, IP) shape stops the "one client refreshes every 100ms" footgun cleanly.
+
+**MCP package now at 0.0.13.** 47 + 21 = 68 tools total. Worker version `26b9df1c-a82a-4765-939e-2eb5ad6e3cb0`. 127 api / 11 mcp / 28 shared tests pass.
+
+---
+
 ## 2026-05-15 (night, late) — PostHog CRUD MCP tools (feature flags / cohorts / surveys / replays) + three-token doc clarification
 
 **Problem.** Two related gaps. (1) Earlier rounds shipped session-replay

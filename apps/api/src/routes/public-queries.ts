@@ -26,6 +26,8 @@ import { getDb } from "../db.js";
 import { requireApiKey, requireProjectAccess } from "../middleware.js";
 import { getRecipe, interpolateQuery } from "../recipes.js";
 import { isPosthogConfigured, runHogQl } from "../posthog.js";
+import { audit } from "../audit.js";
+import { publicQueryRateLimit } from "../rate-limit.js";
 import type { AppBindings } from "../env.js";
 
 const router = new Hono<AppBindings>();
@@ -80,6 +82,15 @@ router.post(
       createdAt: Math.floor(Date.now() / 1000),
     });
     const baseUrl = new URL(c.req.url);
+    await audit(c, {
+      userId: proj.userId,
+      projectId: proj.id,
+      action: "publication.minted",
+      resourceType: "publication",
+      resourceId: id,
+      summary: `Minted publication for recipe '${recipeId}'${description ? `: ${description}` : ""}`,
+      metadata: { recipe_id: recipeId, params: paramsObj },
+    });
     return c.json({
       id,
       project_id: proj.id,
@@ -152,6 +163,14 @@ router.delete(
       .update(publicQueryPublications)
       .set({ revokedAt: Math.floor(Date.now() / 1000) })
       .where(eq(publicQueryPublications.id, publicationId));
+    await audit(c, {
+      userId: proj.userId,
+      projectId: proj.id,
+      action: "publication.revoked",
+      resourceType: "publication",
+      resourceId: publicationId,
+      summary: `Revoked publication ${publicationId}`,
+    });
     return c.json({
       id: publicationId,
       revoked: true,
@@ -168,6 +187,7 @@ router.delete(
 
 const publicRouter = new Hono<AppBindings>();
 publicRouter.use("/v1/public/q/*", cors({ origin: "*", allowMethods: ["GET", "HEAD"] }));
+publicRouter.use("/v1/public/q/*", publicQueryRateLimit());
 
 publicRouter.get("/v1/public/q/:publication_id", async (c) => {
   const publicationId = c.req.param("publication_id");

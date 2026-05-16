@@ -496,8 +496,8 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     name: "agentry_get_session_replay",
     description:
       "Fetch a single session recording's metadata + player URL. Open `player_url` in a " +
-      "browser to watch. For programmatic DOM-event inspection (the snapshot data), call " +
-      "the snapshots subresource directly via curl using the agentry-injected master key.",
+      "browser to watch. For programmatic DOM-event inspection (the rrweb snapshots), " +
+      "call agentry_get_replay_snapshots.",
     inputSchema: {
       type: "object",
       properties: {
@@ -505,6 +505,153 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
         replay_id: { type: "string" },
       },
       required: ["replay_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_get_replay_snapshots",
+    description:
+      "Fetch the rrweb-format DOM snapshots for one recording. Each snapshot has type " +
+      "(Meta / FullSnapshot / IncrementalSnapshot — values 4 / 2 / 3) and timestamp. " +
+      "For agent inspection: filter type=3 events for user actions (clicks, scrolls, " +
+      "inputs). Useful for reconstructing exactly what the user did before an error.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        replay_id: { type: "string" },
+        source: {
+          type: "string",
+          enum: ["realtime", "blob"],
+          description: "PostHog snapshot source. 'realtime' for live, 'blob' for archived.",
+        },
+      },
+      required: ["replay_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_evaluate_feature_flag",
+    description:
+      "Evaluate feature flags for one user (distinct_id). Two shapes:" +
+      "" +
+      "  - Pass `key` to get a single flag's value (boolean / variant string / null if " +
+      "    not active for this user)." +
+      "  - Omit `key` to get a map of all currently-active flags for the user." +
+      "" +
+      "Use this when investigating a bug — 'is this user in the new checkout flow?' is " +
+      "one call away. Pass `person_properties` to override the stored properties for " +
+      "what-if evaluation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        distinct_id: { type: "string", description: "Stable per-user id, same as case.affected_users[].distinct_id." },
+        key: { type: "string", description: "Flag key. Omit to get all flags." },
+        person_properties: { type: "object", description: "Override stored properties for what-if." },
+        groups: { type: "object", description: "Group analytics overrides if your flag targets groups." },
+      },
+      required: ["distinct_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_get_distinct_id_summary",
+    description:
+      "One-call user dossier. Returns: PostHog person properties, total event count, " +
+      "first/last seen, last 20 events, recent session recordings (if replay is on), and " +
+      "a deep-link URL into PostHog's persons UI. Use this when investigating a case — " +
+      "the affected_users[].distinct_id from agentry_get_case lets you build the full " +
+      "picture without 3+ separate HogQL calls.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        distinct_id: { type: "string" },
+      },
+      required: ["distinct_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_survey_responses",
+    description:
+      "Roll-up of survey responses. Returns: the survey definition (questions + choice " +
+      "labels), a response_distribution (counts per choice), the last 50 free-text " +
+      "responses with timestamps, and a web UI deep-link. Saves the agent from composing " +
+      "HogQL with $survey_response property unpacking.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        survey_id: { type: "string" },
+      },
+      required: ["survey_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_create_ab_test",
+    description:
+      "Composite tool: creates a multivariate feature flag AND returns the bound " +
+      "conversion-rate HogQL query an agent can run later via agentry_analytics_query. " +
+      "" +
+      "Pass `name`, `success_event` (e.g. 'checkout_completed'), and `variants` (array of " +
+      "{key} — auto-split rollout if rollout_percentage not given; must sum to 100 if " +
+      "any are explicit). Optional flag_key (default: slugified name)." +
+      "" +
+      "Returns: flag_id, conversion_query string, web_ui_url. Recommended: ≥1000 users " +
+      "per variant before drawing conclusions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: { type: "string" },
+        name: { type: "string" },
+        flag_key: { type: "string", description: "Override the slugified name." },
+        success_event: { type: "string", description: "The event whose conversion you're measuring." },
+        variants: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              key: { type: "string" },
+              name: { type: "string" },
+              rollout_percentage: { type: "number" },
+            },
+          },
+          description: "Min 2 variants. Auto-split if rollout_percentage omitted.",
+        },
+      },
+      required: ["name", "success_event", "variants"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentry_recent_changes",
+    description:
+      "Read the agent-mutation audit log. Returns every flag/cohort/survey/publication/" +
+      "session-replay mutation the agent (or anyone with your `agk_` key) has made in the " +
+      "last N hours." +
+      "" +
+      "Default window is 24 hours. Pass `hours` to widen — 48, 72, 168 (week), max 720 (30d)." +
+      "Pass `action_prefix` (e.g. 'feature_flag.' / 'cohort.' / 'survey.' / 'publication.' / " +
+      "'session_replay.') or `resource_type` to filter. Use this as a periodic " +
+      "'what-did-the-agent-do' check when leaving agents to run unattended.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        hours: { type: "number", description: "Lookback window. 1..720. Default 24." },
+        action_prefix: {
+          type: "string",
+          description: "Filter by action prefix (e.g. 'feature_flag.' matches both create + delete).",
+        },
+        resource_type: {
+          type: "string",
+          enum: ["feature_flag", "cohort", "survey", "publication", "session_replay", "ab_test"],
+        },
+        project_id: { type: "string", description: "Restrict to one project." },
+        limit: { type: "number", description: "Max rows (default 200, max 500)." },
+      },
       additionalProperties: false,
     },
   },
@@ -1576,6 +1723,54 @@ export async function dispatchTool(
           project_id: a.project_id ? String(a.project_id) : undefined,
           replay_id: String(a.replay_id ?? ""),
         });
+      case "agentry_get_replay_snapshots":
+        return await handleGetReplaySnapshots({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          replay_id: String(a.replay_id ?? ""),
+          source: a.source ? (String(a.source) as "realtime" | "blob") : undefined,
+        });
+      case "agentry_evaluate_feature_flag":
+        return await handleEvaluateFeatureFlag({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          distinct_id: String(a.distinct_id ?? ""),
+          key: a.key ? String(a.key) : undefined,
+          person_properties:
+            a.person_properties && typeof a.person_properties === "object"
+              ? (a.person_properties as Record<string, unknown>)
+              : undefined,
+          groups:
+            a.groups && typeof a.groups === "object"
+              ? (a.groups as Record<string, string>)
+              : undefined,
+        });
+      case "agentry_get_distinct_id_summary":
+        return await handleGetDistinctIdSummary({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          distinct_id: String(a.distinct_id ?? ""),
+        });
+      case "agentry_survey_responses":
+        return await handleSurveyResponses({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          survey_id: String(a.survey_id ?? ""),
+        });
+      case "agentry_create_ab_test":
+        return await handleCreateAbTest({
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          name: String(a.name ?? ""),
+          flag_key: a.flag_key ? String(a.flag_key) : undefined,
+          success_event: String(a.success_event ?? ""),
+          variants: Array.isArray(a.variants)
+            ? (a.variants as Array<{ key?: string; name?: string; rollout_percentage?: number }>)
+            : [],
+        });
+      case "agentry_recent_changes":
+        return await handleRecentChanges({
+          hours: typeof a.hours === "number" ? a.hours : undefined,
+          action_prefix: a.action_prefix ? String(a.action_prefix) : undefined,
+          resource_type: a.resource_type ? String(a.resource_type) : undefined,
+          project_id: a.project_id ? String(a.project_id) : undefined,
+          limit: typeof a.limit === "number" ? a.limit : undefined,
+        });
       case "agentry_list_projects":
         return await handleListProjects();
       case "agentry_create_project":
@@ -2384,6 +2579,120 @@ async function handleGetSessionReplay(input: {
   const r = pickOrError(cfg, input.project_id);
   if (!r.ok) return r.error;
   return await api.getSessionReplay(cfg, r.id, input.replay_id);
+}
+
+async function handleGetReplaySnapshots(input: {
+  project_id?: string;
+  replay_id: string;
+  source?: "realtime" | "blob";
+}): Promise<ToolResult> {
+  if (!input.replay_id) {
+    return { error: { code: "invalid_payload", message: "replay_id is required.", next_action: "Pass replay_id from agentry_list_session_replays." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.getReplaySnapshots(cfg, r.id, input.replay_id, input.source);
+}
+
+async function handleEvaluateFeatureFlag(input: {
+  project_id?: string;
+  distinct_id: string;
+  key?: string;
+  person_properties?: Record<string, unknown>;
+  groups?: Record<string, string>;
+}): Promise<ToolResult> {
+  if (!input.distinct_id) {
+    return { error: { code: "invalid_payload", message: "distinct_id is required.", next_action: "Pass the user identifier (same as case.affected_users[].distinct_id)." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.evaluateFeatureFlag(cfg, r.id, {
+    distinct_id: input.distinct_id,
+    key: input.key,
+    person_properties: input.person_properties,
+    groups: input.groups,
+  });
+}
+
+async function handleGetDistinctIdSummary(input: {
+  project_id?: string;
+  distinct_id: string;
+}): Promise<ToolResult> {
+  if (!input.distinct_id) {
+    return { error: { code: "invalid_payload", message: "distinct_id is required.", next_action: "Pass the user identifier." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.getDistinctIdSummary(cfg, r.id, input.distinct_id);
+}
+
+async function handleSurveyResponses(input: {
+  project_id?: string;
+  survey_id: string;
+}): Promise<ToolResult> {
+  if (!input.survey_id) {
+    return { error: { code: "invalid_payload", message: "survey_id is required.", next_action: "Pass survey_id from agentry_list_surveys." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.getSurveyResponses(cfg, r.id, input.survey_id);
+}
+
+async function handleCreateAbTest(input: {
+  project_id?: string;
+  name: string;
+  flag_key?: string;
+  success_event: string;
+  variants: Array<{ key?: string; name?: string; rollout_percentage?: number }>;
+}): Promise<ToolResult> {
+  if (!input.name) {
+    return { error: { code: "invalid_payload", message: "name is required.", next_action: "Pass an A/B test name." } };
+  }
+  if (!input.success_event) {
+    return { error: { code: "invalid_payload", message: "success_event is required.", next_action: "Pass the conversion event name (e.g. 'checkout_completed')." } };
+  }
+  if (!Array.isArray(input.variants) || input.variants.length < 2) {
+    return { error: { code: "invalid_payload", message: "variants must be ≥2 entries.", next_action: "Pass variants: [{key:'control'},{key:'treatment'}]." } };
+  }
+  const cfg = loadConfig();
+  const r = pickOrError(cfg, input.project_id);
+  if (!r.ok) return r.error;
+  return await api.createAbTest(cfg, r.id, {
+    name: input.name,
+    flag_key: input.flag_key,
+    success_event: input.success_event,
+    variants: input.variants,
+  });
+}
+
+async function handleRecentChanges(input: {
+  hours?: number;
+  action_prefix?: string;
+  resource_type?: string;
+  project_id?: string;
+  limit?: number;
+}): Promise<ToolResult> {
+  const cfg = loadConfig();
+  if (!cfg.api_key) {
+    return {
+      error: {
+        code: "no_key",
+        message: "No API key on file.",
+        next_action: "Call agentry_login.",
+      },
+    };
+  }
+  return await api.listRecentChanges(cfg, {
+    hours: input.hours,
+    actionPrefix: input.action_prefix,
+    resourceType: input.resource_type,
+    projectId: input.project_id,
+    limit: input.limit,
+  });
 }
 
 async function handleListProjects(): Promise<ToolResult> {

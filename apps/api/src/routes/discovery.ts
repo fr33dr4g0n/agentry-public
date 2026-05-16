@@ -373,6 +373,17 @@ an \`embeddable_url\` of the form
 CORS — fetchable directly from any browser page. Anyone GET-ing that URL
 gets the recipe's rows. Revoke any time with \`agentry_revoke_publication\`.
 
+**Defence in depth for the public surface:**
+- The visitor-facing \`/v1/public/q/<publication_id>\` endpoint is rate-limited
+  per (publication_id, IP) at 60 req/min. If an attacker burns through, they
+  get a 429 with Retry-After. No DB or PostHog cost beyond the bucket.
+- Every owner-side mutation (publication mint/revoke, feature flag /
+  cohort / survey CRUD, session-replay reconfigure, A/B test mint) writes
+  one row to an append-only audit log. \`agentry_recent_changes(hours=24)\`
+  reads the window — default 24h, configurable up to 720h (30 days). Use
+  it as a periodic "what-did-the-agent-do" check when leaving agents
+  running unattended.
+
 ## API surface (complete)
 
 ### Auth (no key required)
@@ -408,6 +419,7 @@ gets the recipe's rows. Revoke any time with \`agentry_revoke_publication\`.
 - GET    /v1/projects/:id/feature-flags/:flag_id            → get flag
 - PATCH  /v1/projects/:id/feature-flags/:flag_id            → update flag
 - DELETE /v1/projects/:id/feature-flags/:flag_id            → soft-delete flag
+- POST   /v1/projects/:id/feature-flags/evaluate            → evaluate flag(s) for a distinct_id
 - GET    /v1/projects/:id/cohorts                           → list cohorts
 - POST   /v1/projects/:id/cohorts                           → create cohort
 - GET    /v1/projects/:id/cohorts/:cohort_id                → get cohort
@@ -415,9 +427,14 @@ gets the recipe's rows. Revoke any time with \`agentry_revoke_publication\`.
 - GET    /v1/projects/:id/surveys                           → list surveys
 - POST   /v1/projects/:id/surveys                           → create survey
 - GET    /v1/projects/:id/surveys/:survey_id                → get survey
+- GET    /v1/projects/:id/surveys/:survey_id/responses      → roll-up + recent free-text
 - DELETE /v1/projects/:id/surveys/:survey_id                → delete survey
+- POST   /v1/projects/:id/ab-tests                          → create A/B test (flag + conversion query)
 - GET    /v1/projects/:id/session-replays                   → list recordings (filter by distinct_id/date)
 - GET    /v1/projects/:id/session-replays/:replay_id        → recording metadata + player URL
+- GET    /v1/projects/:id/session-replays/:replay_id/snapshots  → rrweb DOM events
+- GET    /v1/projects/:id/users/:distinct_id/summary        → composed user dossier
+- GET    /v1/audit/recent?hours=24                          → audit log of agent mutations
 
 ### Public dashboard (no api key required; \`?key=agp_…\` only, open CORS)
 
@@ -518,6 +535,12 @@ adds local-compute tools that don't exist on the API by design.
 | agentry_delete_survey           | DELETE /v1/projects/:id/surveys/:id       |
 | agentry_list_session_replays    | GET /v1/projects/:id/session-replays (filter by distinct_id / date) |
 | agentry_get_session_replay      | GET /v1/projects/:id/session-replays/:id (returns player_url) |
+| agentry_get_replay_snapshots    | rrweb DOM-event snapshots — reconstruct what the user clicked |
+| agentry_evaluate_feature_flag   | "is THIS user in flag X?" via PostHog /decide/ |
+| agentry_get_distinct_id_summary | composed user dossier (person + events + recordings + first/last seen) |
+| agentry_survey_responses        | roll-up of survey responses + recent free-text |
+| agentry_create_ab_test          | composite — multivariate flag + bound conversion query |
+| agentry_recent_changes          | audit log of agent mutations (default 24h, hours param up to 720) |
 | agentry_list_event_names        | grouped list of analytics events seen     |
 | agentry_list_feedback           | feedback channel for agent-filed gaps     |
 | agentry_send_feedback           | file a missing-feature / friction report  |
@@ -695,6 +718,7 @@ directly without dropping to the web UI.
 | \`agentry_create_feature_flag\`   | Simple shape: \`{key, name?, active?, rollout_percentage?}\`. Advanced: pass full \`filters\` for property-targeted / multivariate / cohort-scoped flags. |
 | \`agentry_update_feature_flag\`   | Patch \`active\`, \`name\`, \`rollout_percentage\`, or \`filters\`.               |
 | \`agentry_delete_feature_flag\`   | Soft-delete (recoverable in PostHog's web UI).                                |
+| \`agentry_evaluate_feature_flag\` | "Is THIS user in flag X?" — one call returns the flag value (boolean/variant) for a distinct_id. Pass \`key\` for one flag, omit for all flags. Use \`person_properties\` for what-if eval. |
 
 Reading the flag value in customer code uses PostHog's standard SDKs
 (\`posthog.isFeatureEnabled('key')\`, \`posthog.getFeatureFlag('key')\`).
@@ -719,10 +743,11 @@ WHERE cohort_id = N)\`).
 
 | Tool                    | What it does                                                                   |
 |-------------------------|--------------------------------------------------------------------------------|
-| \`agentry_list_surveys\`  | List surveys (NPS, CSAT, custom popups).                                       |
-| \`agentry_get_survey\`    | One survey's definition + appearance config + linked flag.                     |
-| \`agentry_create_survey\` | Quick: \`{name, question, question_type?}\` for single-question popover. Multi: \`{name, questions: [...]}\`. Created in draft — pass \`start_date\` (ISO) to launch immediately. |
-| \`agentry_delete_survey\` | Hard-delete.                                                                   |
+| \`agentry_list_surveys\`     | List surveys (NPS, CSAT, custom popups).                                       |
+| \`agentry_get_survey\`       | One survey's definition + appearance config + linked flag.                     |
+| \`agentry_create_survey\`    | Quick: \`{name, question, question_type?}\` for single-question popover. Multi: \`{name, questions: [...]}\`. Created in draft — pass \`start_date\` (ISO) to launch immediately. |
+| \`agentry_survey_responses\` | Roll-up of responses + recent free-text. Pre-built so agents skip composing HogQL with \`$survey_response\` property unpacking. |
+| \`agentry_delete_survey\`    | Hard-delete.                                                                   |
 
 Responses land as \`survey sent\` events. To read them:
 
@@ -741,11 +766,35 @@ these to find and inspect recordings:
 | Tool                            | What it does                                                                                |
 |---------------------------------|---------------------------------------------------------------------------------------------|
 | \`agentry_list_session_replays\`  | Filter by \`distinct_id\` (the user from a case's affected_users), \`date_from\`, \`date_to\`. |
-| \`agentry_get_session_replay\`    | Returns \`player_url\` — open in browser to watch. Snapshot bytes via curl + master key if you want to inspect DOM events programmatically. |
+| \`agentry_get_session_replay\`    | Returns \`player_url\` — open in browser to watch.                                      |
+| \`agentry_get_replay_snapshots\`  | Raw rrweb DOM snapshots. Filter type=3 events to reconstruct user clicks/scrolls/inputs. Useful when an agent wants to programmatically know *what the user did* before the error. |
 
 Killer workflow: when investigating an error, grab \`affected_users[].distinct_id\`
 from \`agentry_get_case\`, pass it to \`agentry_list_session_replays\`, and
 the player URL of the recording leading up to the error is one tool call away.
+For programmatic reconstruction of the user's action trail, follow with
+\`agentry_get_replay_snapshots\`.
+
+### A/B testing (composite)
+
+| Tool                         | What it does                                                                                  |
+|------------------------------|-----------------------------------------------------------------------------------------------|
+| \`agentry_create_ab_test\`     | Creates a multivariate feature flag AND returns the bound conversion-rate HogQL query in one call. Auto-splits rollout across variants if not specified. Suggested wait: ≥1000 users per variant before drawing conclusions. |
+
+The returned \`conversion_query\` is ready to feed into \`agentry_analytics_query\`
+on a schedule — agentry never auto-evaluates the test, the agent decides
+when results are conclusive.
+
+### User dossiers + audit log
+
+| Tool                              | What it does                                                                                    |
+|-----------------------------------|-------------------------------------------------------------------------------------------------|
+| \`agentry_get_distinct_id_summary\` | Composed user dossier — person properties + event count + first/last seen + last 20 events + recent recordings + PostHog UI deep link. Saves ≥3 separate HogQL calls. |
+| \`agentry_recent_changes\`          | Read the agent-mutation audit log. Default \`hours=24\`; pass \`hours=48\`, \`72\`, \`168\` (week), max \`720\` (30 days). Filter by \`action_prefix\` (e.g. \`feature_flag.\`) or \`resource_type\`. Every flag/cohort/survey/publication/replay/AB-test mutation lands here, with IP + UA + summary. |
+
+The audit log is your safety net for unattended agent runs. If you let an
+agent loose overnight, run \`agentry_recent_changes(hours=12)\` in the
+morning to see exactly what got mutated, by whom, from where.
 
 ## Webhooks — push events to your code
 
@@ -919,7 +968,14 @@ router.get("/v1/privacy/disclosure", (c) => {
   return c.json({
     canonical_url: "https://agentry.sh/privacy",
     variant: variant === "client" ? "client" : "server",
-    last_updated: "2026-05-10",
+    last_updated: "2026-05-15",
+    data_residency: {
+      region: "EU (Hetzner FRA / Falkenstein, Germany)",
+      analytics_backend: "Self-hosted PostHog (per-user team isolation)",
+      error_backend: "Cloudflare Workers (api.agentry.sh) + Turso libSQL",
+      sourcemap_storage: "Cloudflare R2",
+      transit_encryption: "TLS 1.3 end-to-end",
+    },
     includes: {
       errors: includeErrors,
       analytics: includeAnalytics,
@@ -936,6 +992,7 @@ router.get("/v1/privacy/disclosure", (c) => {
             ? "### Product analytics\n\nWe track aggregate product usage to improve the experience. Tracked events include page views, key product actions, and contextual properties such as the page URL, referrer, language, and user-agent. We assign a randomly-generated identifier stored in your browser's localStorage to keep your interactions consistent across visits."
             : "### Product analytics\n\nWe track aggregate product usage server-side to improve the experience. Tracked events include the action name and contextual properties at the moment of the action.")
         : "") +
+      "\n\n### Data residency\n\nMonitoring data is stored in the European Union: analytics on a self-hosted PostHog instance in Hetzner's Falkenstein, Germany data centre; error events and metadata in Turso (libSQL) replicated across Cloudflare's edge with a primary in the EU. Encrypted in transit (TLS 1.3) and at rest." +
       "\n\n*This monitoring is provided by [agentry](https://agentry.sh), an agent-first observability platform.*\n",
     learn_more: "https://agentry.sh",
   });

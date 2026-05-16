@@ -236,6 +236,22 @@ export async function makeTestEnv(opts?: {
       )`,
       `CREATE INDEX feedback_user_idx ON feedback (user_id, created_at)`,
       `CREATE INDEX feedback_kind_idx ON feedback (kind, resolved, created_at)`,
+      `CREATE TABLE audit_log (
+        id text PRIMARY KEY,
+        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        project_id text REFERENCES projects(id) ON DELETE SET NULL,
+        action text NOT NULL,
+        resource_type text NOT NULL,
+        resource_id text,
+        summary text,
+        metadata_json text,
+        ip text,
+        ua text,
+        at integer NOT NULL DEFAULT (unixepoch())
+      )`,
+      `CREATE INDEX audit_user_time_idx ON audit_log (user_id, at)`,
+      `CREATE INDEX audit_proj_time_idx ON audit_log (project_id, at)`,
+      `CREATE INDEX audit_action_idx ON audit_log (user_id, action, at)`,
     ],
     "write",
   );

@@ -11,3 +11,4 @@ coverage
 .turso
 *.tsbuildinfo
 .astro
+.claude

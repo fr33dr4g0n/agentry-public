@@ -1,7 +1,22 @@
 # Agentry — Build Status
 
-**Last updated:** 2026-05-15 (PostHog CRUD MCP tools + three-token doc)
+**Last updated:** 2026-05-15 (night) — audit log + rate limit + 6 agent-optimization tools + EU data residency
 **Phase:** ✅ v0 with capture + query + memory + alerts + user identification + agent feedback + plan + usage metering + **public dashboard key (`agp_…`) + split agentry.md/agentry-install.md docs**.
+
+**Most recent additions (2026-05-15, late night):**
+
+  - **Audit log** — new `audit_log` table + `apps/api/src/audit.ts` helper. Every mutating handler (publication mint/revoke, feature flag / cohort / survey CRUD, session-replay reconfigure, A/B test mint) writes one append-only row with action / resource_type / resource_id / summary / IP / UA / metadata. Migration applied to prod Turso.
+  - **`agentry_recent_changes(hours?, action_prefix?, resource_type?, project_id?)`** — reads the audit log. Default `hours=24`, configurable up to 720 (30 days). The "what did the agent do unattended" safety net.
+  - **Rate limit on `/v1/public/q/*`** — in-isolate token bucket, 60 req/min per (publication_id, IP). 429 with Retry-After. New `apps/api/src/rate-limit.ts`.
+  - **5 high-value agent tools:**
+    - `agentry_evaluate_feature_flag(distinct_id, key?)` — single call: "is THIS user in flag X?" via PostHog `/decide/`.
+    - `agentry_get_distinct_id_summary(distinct_id)` — composed user dossier: person + event stats + recent events + recent recordings.
+    - `agentry_survey_responses(survey_id)` — roll-up + recent free-text. Skips HogQL composing.
+    - `agentry_create_ab_test({name, success_event, variants})` — multivariate flag + bound conversion HogQL query in one tool call.
+    - `agentry_get_replay_snapshots(replay_id, source?)` — rrweb DOM events for programmatic reconstruction of what the user did.
+  - **Privacy disclosure** now exposes `data_residency`: EU (Hetzner FRA), Cloudflare Workers, R2 sourcemap storage, TLS 1.3 end-to-end. `paste_ready_markdown` includes the residency section automatically.
+  - **Deleted unused** `packages/sdk-node` and `packages/sdk-browser` — agentry has no SDK by design; agents paste a 25-line fetch helper. The packages were never published, only confused contributors.
+  - MCP version bumped to **0.0.13**. Worker version `26b9df1c-a82a-4765-939e-2eb5ad6e3cb0`.
 
 **Most recent additions (2026-05-15, evening):**
 
