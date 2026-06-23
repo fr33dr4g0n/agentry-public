@@ -42,7 +42,7 @@
       "Where are users dropping off?"
     ],
     "brandColor": "#111827",
-    "composerIcon": "./assets/app-icon.png",
+    "composerIcon": "./assets/icon.png",
     "logo": "./assets/logo.png",
     "screenshots": [
       "./assets/screenshot-home.png"
