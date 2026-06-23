@@ -24,9 +24,9 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Agentry",
+    "displayName": "Agentry Observability",
     "developerName": "Agentry",
-    "shortDescription": "Product analytics, logging, and deploys for agents",
+    "shortDescription": "Analytics, error logging, and deploy attribution for coding agents",
     "longDescription": "Agentry gives AI coding agents one HTTP API for product analytics, error logging, and deploy attribution. Use it when an agent needs to install telemetry, verify signal coverage, debug production cases, answer product analytics questions, or connect regressions to deploys from live data.",
     "category": "Data & Analytics",
     "capabilities": [
