@@ -110,10 +110,17 @@ marketplace installs.
 
 ## Codex Plugin
 
+Agentry is distributed to Codex as a Git-backed marketplace source. It will not
+appear in global Codex plugin search for unrelated accounts until they add this
+marketplace source, receive a workspace share, or OpenAI curates it.
+
 ```bash
 codex plugin marketplace add fr33dr4g0n/agentry-public
 codex plugin add agentry@agentry
 ```
+
+Then open Codex Plugins and switch to the `agentry` marketplace source if you
+want to browse it visually.
 
 The plugin in `plugins/agentry` bundles the same skill for Codex plugin
 marketplace installs and includes Agentry logo metadata for Codex plugin cards.
