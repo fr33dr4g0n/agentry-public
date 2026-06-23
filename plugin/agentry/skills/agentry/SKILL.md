@@ -14,17 +14,19 @@ monitoring, deploy tracking, production debugging, and day-to-day Agentry reads.
 Do not treat this file as an API reference; it is a compact entry point to the
 live docs.
 
-## Fetch live docs
+## What to fetch next
 
-- Start: <https://api.agentry.sh/> - discovery map and the 3 write / 3 read model.
-- Install/setup: <https://agentry.sh/install.md> - bootstrap flow, auth, project
-  binding, adapter install, and verification gates.
-- Daily use: <https://agentry.sh/agentry.md> - questions, cases, analytics,
-  deploys, query blueprints, public queries, and ops.
-- Exact API shape: <https://api.agentry.sh/v1/openapi.json> - filter with
-  `?flow=`, `?tag=`, `?path=&method=`, or `?index=true`.
-- Adapter install/update: <https://api.agentry.sh/adapters> - write every adapter
-  that matches the detected agent harness.
+- Installing or setting up Agentry: fetch <https://agentry.sh/install.md>.
+- Answering product, reliability, case, analytics, or deploy questions after
+  setup: fetch <https://agentry.sh/agentry.md>.
+- Discovering the API surface and 3 write / 3 read model: start at
+  <https://api.agentry.sh/>.
+- Checking exact request/response shapes: fetch
+  <https://api.agentry.sh/v1/openapi.json>; filter with `?flow=`, `?tag=`,
+  `?path=&method=`, or `?index=true`.
+- Installing or refreshing future-session adapters: fetch
+  <https://api.agentry.sh/adapters> and write every adapter that matches the
+  detected agent harness.
 
 Use a custom User-Agent header for non-browser direct HTTP calls; default
 clients such as Python-urllib can be blocked. Browser fetch uses the browser's

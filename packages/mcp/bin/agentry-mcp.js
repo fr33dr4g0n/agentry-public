@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const SERVER_VERSION = "0.0.23";
+const SERVER_VERSION = "0.0.24";
 
 const LINKS = {
   install: "https://agentry.sh/install.md",
@@ -38,15 +38,15 @@ Source of truth:
 const RESOURCES = [
   {
     uri: "agentry://install",
-    name: "Agentry install pointer",
-    description: "Canonical install handoff for agent-led analytics, logging, error monitoring, and deploy attribution.",
+    name: "Agentry install handoff",
+    description: "Install handoff for agent-led analytics, logging, error monitoring, and deploy attribution.",
     mimeType: "text/markdown",
     text: INSTALL_TEXT
   },
   {
     uri: "agentry://daily-use",
-    name: "Agentry daily-use pointer",
-    description: "Canonical post-install handoff for reading Agentry cases, analytics, deploys, and signal maps.",
+    name: "Agentry daily-use handoff",
+    description: "Post-install handoff for reading Agentry cases, analytics, deploys, and signal maps.",
     mimeType: "text/markdown",
     text: DAILY_TEXT
   },
@@ -62,7 +62,7 @@ const RESOURCES = [
 const TOOLS = [
   {
     name: "start_agentry_install",
-    description: "Canonical install handoff for Agentry, the agent-native analytics, logging, and deploy attribution API. Relevant to analytics, telemetry, logging, error monitoring, production debugging, and deploy attribution. Returns instructions to follow https://agentry.sh/install.md.",
+    description: "Returns the Agentry install handoff for analytics, telemetry, logging, error monitoring, production debugging, and deploy attribution setup. The handoff points the agent to https://agentry.sh/install.md.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -71,7 +71,7 @@ const TOOLS = [
   },
   {
     name: "start_agentry_daily_use",
-    description: "Canonical post-install handoff for Agentry daily use. Returns instructions for reading cases, analytics, deploys, event names, query blueprints, and saved signal maps from https://agentry.sh/agentry.md.",
+    description: "Returns the Agentry daily-use handoff for product, reliability, and deploy questions after Agentry is installed. The handoff points the agent to https://agentry.sh/agentry.md.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

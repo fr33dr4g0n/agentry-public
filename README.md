@@ -4,6 +4,19 @@ Agentry is agent-native analytics and logging for coding agents. It covers
 product analytics, error logging, and deploy attribution through one HTTP API so
 agents can answer what users did, what broke, and what changed.
 
+## What Agentry Covers
+
+- Product analytics for user, funnel, activation, retention, and business
+  events.
+- Error logging for exceptions, failed jobs, operational failures, and case
+  context.
+- Deploy attribution that connects production behavior to releases and code
+  changes.
+- Agent-led install from the actual codebase, with verification before the
+  setup is called complete.
+
+## What This Repository Contains
+
 This repository contains the public MCP server package and Claude Code
 plugin/skill for Agentry.
 
@@ -13,8 +26,9 @@ plugin/skill for Agentry.
 - `.claude-plugin/marketplace.json` - Claude Code marketplace catalog.
 
 The MCP server and skill do not proxy the Agentry API, ingest telemetry, or
-replace the live docs. Runtime apps write directly to Agentry's HTTP API, and
-agents install or use Agentry from the canonical docs:
+replace the live docs. Runtime apps write directly to Agentry's HTTP API.
+
+## Canonical Docs
 
 - Install: https://agentry.sh/install.md
 - Skill: https://agentry.sh/skill/agentry/SKILL.md

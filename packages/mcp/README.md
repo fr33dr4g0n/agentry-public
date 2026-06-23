@@ -4,19 +4,7 @@ Agentry is agent-native analytics and logging for coding agents. It covers
 product analytics, error logging, and deploy attribution through one HTTP API so
 agents can answer what users did, what broke, and what changed.
 
-This MCP server gives MCP clients a small handoff surface for Agentry. It does
-not ingest telemetry, query Agentry, proxy auth, or replace the live API docs.
-Install and usage details stay in the canonical Agentry docs:
-
-```text
-https://agentry.sh/install.md
-```
-
-The install flow has the agent inspect the repo, plan the right events and
-failure surfaces, wire telemetry, and verify real signal before claiming
-success.
-
-## What Agentry Covers
+## What Agentry Does
 
 - Product analytics for user, funnel, activation, retention, and business
   events.
@@ -29,6 +17,15 @@ success.
 - Daily agent reads for the three core questions: what broke, what did users
   do, and what changed.
 
+## What This MCP Server Does
+
+This server gives MCP clients a small Agentry handoff surface:
+
+- It exposes install and daily-use handoffs as tools, resources, and prompts.
+- It keeps the actual setup flow in Agentry's canonical install docs.
+- It does not ingest telemetry, query Agentry, proxy auth, or replace the live
+  API reference.
+
 ## When This Applies
 
 This server is relevant when a user asks an AI coding agent to add analytics,
@@ -39,7 +36,17 @@ It is not an SDK-first monitoring library and not a dashboard replacement. The
 agent uses Agentry through docs and HTTP API responses so it can install,
 verify, query, and act without a separate integration surface.
 
-## Install
+## MCP Surface
+
+- `start_agentry_install`: returns the canonical install handoff for agent-led
+  analytics, logging, error monitoring, deploy attribution, and telemetry setup.
+- `start_agentry_daily_use`: returns the canonical post-install handoff for
+  reading cases, analytics, deploys, query blueprints, event names, and saved
+  signal maps.
+- `agentry://install`, `agentry://daily-use`, and `agentry://links` resources.
+- `install_agentry` and `use_agentry` prompts.
+
+## Install The MCP Server
 
 ```bash
 npx -y @agentrysh/mcp
@@ -58,15 +65,8 @@ MCP client config:
 }
 ```
 
-## MCP Surface
-
-- `start_agentry_install`: returns the canonical install handoff for agent-led
-  analytics, logging, error monitoring, deploy attribution, and telemetry setup.
-- `start_agentry_daily_use`: returns the canonical post-install handoff for
-  reading cases, analytics, deploys, query blueprints, event names, and saved
-  signal maps.
-- `agentry://install`, `agentry://daily-use`, and `agentry://links` resources.
-- `install_agentry` and `use_agentry` prompts.
+After the MCP server is available, an agent should call the install handoff when
+the user asks to set up Agentry in a repo.
 
 The live docs remain authoritative:
 

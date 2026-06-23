@@ -1,6 +1,6 @@
 {
   "name": "agentry",
-  "description": "Claude Code plugins for Agentry, agent-native analytics and logging over the Agentry HTTP API.",
+  "description": "Agentry for Claude Code: agent-native analytics, error logging, and deploy attribution over the Agentry HTTP API.",
   "version": "0.1.1",
   "owner": {
     "name": "Agentry"
