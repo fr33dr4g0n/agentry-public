@@ -12,14 +12,18 @@
       "source": "./plugin/agentry",
       "version": "0.1.1",
       "homepage": "https://agentry.sh",
+      "repository": "https://github.com/fr33dr4g0n/agentry-public",
       "license": "MIT",
       "keywords": [
+        "agentry",
         "observability",
         "logging",
         "error-monitoring",
         "analytics",
+        "product-analytics",
         "deploys",
         "deploy-attribution",
+        "production-debugging",
         "coding-agents"
       ],
       "category": "developer-tools",

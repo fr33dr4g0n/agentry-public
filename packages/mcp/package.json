@@ -1,10 +1,11 @@
 {
   "name": "@agentrysh/mcp",
-  "version": "0.0.27",
+  "version": "0.0.29",
   "mcpName": "io.github.fr33dr4g0n/agentry-observability",
   "description": "MCP handoff to the Agentry skill for agent-native analytics and logging.",
   "type": "module",
   "bin": {
+    "mcp": "bin/agentry-mcp.js",
     "agentry-mcp": "bin/agentry-mcp.js"
   },
   "files": [
@@ -21,12 +22,16 @@
     "agentry",
     "mcp",
     "model-context-protocol",
+    "ai-coding-agents",
+    "agent-native",
     "observability",
     "error-monitoring",
     "logging",
     "analytics",
+    "product-analytics",
     "deploys",
     "deploy-attribution",
+    "production-debugging",
     "coding-agents"
   ],
   "license": "MIT",

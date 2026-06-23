@@ -41,6 +41,16 @@ replace the live docs. Runtime apps write directly to Agentry's HTTP API.
 - API discovery: https://api.agentry.sh/
 - OpenAPI: https://api.agentry.sh/v1/openapi.json
 
+## Public Links
+
+- Website: https://agentry.sh/
+- NPM package: https://www.npmjs.com/package/@agentrysh/mcp
+- MCP repository: https://github.com/fr33dr4g0n/agentry-public
+- Skill repository: https://github.com/fr33dr4g0n/agentry-skill
+- Live skill: https://agentry.sh/skill/agentry/SKILL.md
+- Adapter manifest: https://api.agentry.sh/adapters
+- MCP registry name: `io.github.fr33dr4g0n/agentry-observability`
+
 ## MCP Server
 
 ```bash

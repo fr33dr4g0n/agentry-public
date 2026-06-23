@@ -1,14 +1,19 @@
 #!/usr/bin/env node
 
-const SERVER_VERSION = "0.0.27";
+const SERVER_VERSION = "0.0.29";
 
 const LINKS = {
+  website: "https://agentry.sh/",
   install: "https://agentry.sh/install.md",
   reference: "https://agentry.sh/agentry.md",
   skill: "https://agentry.sh/skill/agentry/SKILL.md",
   discovery: "https://api.agentry.sh/",
   openapi: "https://api.agentry.sh/v1/openapi.json",
-  adapters: "https://api.agentry.sh/adapters"
+  adapters: "https://api.agentry.sh/adapters",
+  npm: "https://www.npmjs.com/package/@agentrysh/mcp",
+  mcpRepository: "https://github.com/fr33dr4g0n/agentry-public",
+  skillRepository: "https://github.com/fr33dr4g0n/agentry-skill",
+  mcpRegistryName: "io.github.fr33dr4g0n/agentry-observability"
 };
 
 const SKILL_HANDOFF_TEXT = `Agentry is agent-native analytics and logging for coding agents: product analytics, error logging, and deploy attribution over one HTTP API.
@@ -24,11 +29,18 @@ When the skill is loaded:
 - Exact API shapes come from ${LINKS.openapi}
 
 Source of truth:
+- Website: ${LINKS.website}
 - Skill: ${LINKS.skill}
 - Install: ${LINKS.install}
 - Daily use: ${LINKS.reference}
 - API discovery: ${LINKS.discovery}
 - OpenAPI: ${LINKS.openapi}
+
+Public distribution:
+- NPM: ${LINKS.npm}
+- MCP repository: ${LINKS.mcpRepository}
+- Skill repository: ${LINKS.skillRepository}
+- MCP registry name: ${LINKS.mcpRegistryName}
 
 This MCP server does not perform auth, install Agentry, ingest telemetry, query Agentry, proxy the API, or replace the skill.`;
 

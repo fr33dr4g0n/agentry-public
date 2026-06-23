@@ -13,6 +13,8 @@
     "logging",
     "error-monitoring",
     "deploy-attribution",
+    "product-analytics",
+    "production-debugging",
     "coding-agents"
   ],
   "skills": [

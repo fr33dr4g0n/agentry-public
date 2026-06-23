@@ -86,3 +86,12 @@ uses `AGENTRY_DSN`.
 
 Do not rely on this installed file for endpoint details. Fetch the live docs
 above; they are authoritative and can update independently of adapters.
+
+## Public distribution
+
+- Website: <https://agentry.sh/>.
+- Live skill: <https://agentry.sh/skill/agentry/SKILL.md>.
+- Skill repository: <https://github.com/fr33dr4g0n/agentry-skill>.
+- MCP package: <https://www.npmjs.com/package/@agentrysh/mcp>.
+- MCP repository: <https://github.com/fr33dr4g0n/agentry-public>.
+- Adapter manifest: <https://api.agentry.sh/adapters>.

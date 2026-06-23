@@ -32,6 +32,16 @@ This server gives MCP clients one Agentry handoff:
 - It does not ingest telemetry, query Agentry, proxy auth, or replace the live
   API reference.
 
+## Public Links
+
+- Website: https://agentry.sh/
+- NPM package: https://www.npmjs.com/package/@agentrysh/mcp
+- MCP repository: https://github.com/fr33dr4g0n/agentry-public
+- Skill repository: https://github.com/fr33dr4g0n/agentry-skill
+- Live skill: https://agentry.sh/skill/agentry/SKILL.md
+- Adapter manifest: https://api.agentry.sh/adapters
+- MCP registry name: `io.github.fr33dr4g0n/agentry-observability`
+
 ## When This Applies
 
 This server is relevant when a user asks an AI coding agent to add analytics,
