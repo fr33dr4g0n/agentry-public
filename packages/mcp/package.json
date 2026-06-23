@@ -1,8 +1,8 @@
 {
   "name": "@agentrysh/mcp",
-  "version": "0.0.21",
+  "version": "0.0.23",
   "mcpName": "io.github.fr33dr4g0n/agentry-observability",
-  "description": "Thin MCP discovery wrapper that points agents to the canonical Agentry install skill and HTTP docs.",
+  "description": "Agent-native analytics, error logging, and deploy attribution for coding agents.",
   "type": "module",
   "bin": {
     "agentry-mcp": "bin/agentry-mcp.js"
@@ -22,7 +22,11 @@
     "mcp",
     "model-context-protocol",
     "observability",
+    "error-monitoring",
+    "logging",
     "analytics",
+    "deploys",
+    "deploy-attribution",
     "coding-agents"
   ],
   "license": "MIT",

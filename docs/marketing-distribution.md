@@ -1,8 +1,18 @@
 # Agentry Distribution Playbook
 
-Agentry's distribution surface should stay thin: every listing, plugin, skill,
+Agentry's distribution surfaces should stay thin: every listing, plugin, skill,
 and MCP wrapper points agents back to the canonical install doc and live HTTP
 API. Do not fork install logic into marketplace-specific packages.
+
+Each surface has a different reader:
+
+- Registry and package metadata: short searchable facts.
+- MCP tools, prompts, and resources: agent-callable handoff text.
+- Skills and repo adapters: operational instructions loaded inside an agent
+  session.
+- Public README files: human and crawler-facing explanation of what is
+  installable and why it exists.
+- This playbook: distribution strategy, marketplace copy, and launch tracking.
 
 ## Canonical Assets
 
@@ -21,20 +31,19 @@ API. Do not fork install logic into marketplace-specific packages.
 
 Short description:
 
-> Agentry gives AI coding agents one API for production errors, product events,
-> and deploys, so they can debug failures, explain user behavior, and trace
-> regressions from real production data.
+> Agentry is agent-native analytics and logging for coding agents: product
+> analytics, error logging, and deploy attribution over one HTTP API.
 
 MCP listing description:
 
-> A tiny MCP discovery wrapper for Agentry. It points agents to the canonical
-> Agentry install skill and live HTTP docs; the Agentry HTTP API remains the
-> product surface.
+> Agent-native analytics, error logging, and deploy attribution for coding
+> agents. The MCP server returns canonical install and daily-use handoffs for
+> Agentry's live HTTP API.
 
 Claude skill listing description:
 
-> Teach Claude Code how to install and use Agentry: agent-first error
-> monitoring, product analytics, and deploy attribution over one HTTP API.
+> Agentry skill for agent-native analytics, error logging, and deploy
+> attribution over the Agentry HTTP API.
 
 Tags:
 
@@ -42,6 +51,39 @@ Tags:
 observability, analytics, error-monitoring, deploys, developer-tools,
 coding-agents, mcp, agent-skills
 ```
+
+## Surface-Specific Copy Rules
+
+1. Package README
+   - Lead with what Agentry is.
+   - Explain what the package exposes and what it does not do.
+   - Put install commands near the top.
+   - Mention the canonical install docs before any implementation detail.
+
+2. MCP tool and prompt descriptions
+   - Describe the returned handoff and the conditions where the tool applies.
+   - Keep side effects explicit: the wrapper returns text only; the agent still
+     has to follow the live install or daily-use docs.
+   - Include discoverable terms: analytics, logging, error monitoring, product
+     telemetry, deploy attribution, production debugging.
+
+3. Skill and adapter docs
+   - Use direct operational instructions for an agent in a repo session.
+   - Start with the product mental model, then live docs, then auth and write/read
+     paths.
+   - Do not include marketplace or packaging strategy.
+
+4. Marketplace metadata
+   - Keep descriptions short and literal.
+   - Avoid claims such as "official", "best", or platform-recommended unless a
+     platform grants that status.
+   - Prefer nouns users search for: analytics, logging, observability, errors,
+     deploys, telemetry, coding agents.
+
+5. Public repo root README
+   - Explain that the repo contains the MCP package and plugin/skill.
+   - Keep internal submission strategy out of the README.
+   - Show install commands and canonical docs.
 
 ## Main Places To Post
 
@@ -140,18 +182,18 @@ coding-agents, mcp, agent-skills
 
 Directory blurb:
 
-> Agentry gives coding agents production context: errors, product analytics, and
-> deploys over one HTTP API. This MCP server is intentionally tiny. It tells the
-> agent to install Agentry from the canonical live docs, so every client follows
-> the same setup and verification path.
+> Agentry is agent-native analytics and logging for coding agents: product
+> analytics, error logging, and deploy attribution over one HTTP API. The MCP
+> server returns canonical install and daily-use handoffs for the live Agentry
+> docs.
 
 First community post:
 
 > I built Agentry for teams using AI coding agents as their daily product/dev
-> interface. It gives the agent one API for production errors, product events,
-> and deploy history. The agent installs telemetry from the repo, verifies real
-> signal, then answers "what broke?", "what did users do?", and "what changed?"
-> from live data.
+> interface. It gives the agent one API for product events, production errors,
+> and deploy history. The agent
+> installs telemetry from the repo, verifies real signal, then answers "what
+> broke?", "what did users do?", and "what changed?" from live data.
 >
 > The MCP package is just a discovery wrapper: it points agents to the canonical
 > install doc instead of creating another integration surface.

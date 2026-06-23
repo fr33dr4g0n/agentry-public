@@ -1,7 +1,21 @@
 {
   "name": "agentry",
-  "version": "0.1.0",
-  "description": "Agent-first error monitoring, product analytics, and deploy attribution over the Agentry HTTP API. Bundles the thin Agentry discovery skill.",
+  "version": "0.1.1",
+  "description": "Agentry skill for agent-native analytics, error logging, and deploy attribution over the Agentry HTTP API.",
   "author": { "name": "Agentry", "url": "https://agentry.sh" },
-  "homepage": "https://agentry.sh"
+  "homepage": "https://agentry.sh",
+  "repository": "https://github.com/fr33dr4g0n/agentry-public",
+  "license": "MIT",
+  "keywords": [
+    "agentry",
+    "observability",
+    "analytics",
+    "logging",
+    "error-monitoring",
+    "deploy-attribution",
+    "coding-agents"
+  ],
+  "skills": [
+    "./skills/agentry/SKILL.md"
+  ]
 }

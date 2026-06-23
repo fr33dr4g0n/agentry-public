@@ -1,13 +1,18 @@
 ---
 name: agentry
-description: Use when the user wants to set up, install, or work with Agentry - agent-first error monitoring, product analytics, and deploy attribution. Triggers on "install agentry", "set me up with agentry", "add agentry to this project", investigating a production error or case, or sending errors/analytics/deploys to Agentry.
+description: Use when the user asks to install, set up, or use Agentry; add analytics, logging, error monitoring, deploy attribution, product telemetry, or production debugging; investigate a production error or case; or answer product/reliability questions from Agentry data.
 ---
 
-# Agentry - agent-first observability
+# Agentry - agent-native analytics and logging
 
-Agentry is error monitoring + product analytics + deploy attribution for coding
-agents. There is no SDK and no built-in dashboard. The HTTP API is the product; this
-skill is only a pointer to the live docs.
+Agentry is agent-native analytics and logging for coding agents. It covers
+product analytics, error logging, and deploy attribution through one HTTP API so
+agents can answer what users did, what broke, and what changed.
+
+Use this skill for Agentry install/setup, product analytics, logging, error
+monitoring, deploy tracking, production debugging, and day-to-day Agentry reads.
+Do not treat this file as an API reference; it is a compact entry point to the
+live docs.
 
 ## Fetch live docs
 
@@ -24,6 +29,17 @@ skill is only a pointer to the live docs.
 Use a custom User-Agent header for non-browser direct HTTP calls; default
 clients such as Python-urllib can be blocked. Browser fetch uses the browser's
 own User-Agent and cannot set this header manually.
+
+## Install workflow
+
+When installing Agentry, fetch <https://agentry.sh/install.md> and follow that
+flow. Start from the repo's important business question and funnel/business
+logic flow. Let `POST /v1/install/plan` derive the events, properties, error
+surfaces, and deploy proof from the actual codebase. Do not hand-write a
+generic event catalog.
+
+Before claiming success, save the signal map and implementation report, then
+verify that the approved telemetry is flowing.
 
 ## Mental model
 
@@ -51,11 +67,6 @@ Read with `AGENTRY_API_KEY`:
 Query blueprints, event names, public queries, health, and next-steps are helpers around
 those three read concepts. Public-query URLs and dashboards are optional output
 surfaces, not proof that the underlying product question is answerable.
-
-During install, start from the repo's important business question and
-funnel/business logic flow. Let `POST /v1/install/plan` derive the events,
-properties, error surfaces, and deploy proof; do not hand-write a generic event
-catalog.
 
 For day-to-day questions, read the saved signal map, latest verify report,
 answer contracts, event names, and property keys before choosing a query

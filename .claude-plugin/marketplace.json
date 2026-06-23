@@ -1,22 +1,25 @@
 {
   "name": "agentry",
-  "description": "Agentry plugins for agent-first observability.",
-  "version": "0.1.0",
+  "description": "Claude Code plugins for Agentry, agent-native analytics and logging over the Agentry HTTP API.",
+  "version": "0.1.1",
   "owner": {
     "name": "Agentry"
   },
   "plugins": [
     {
       "name": "agentry",
-      "description": "Thin Agentry discovery skill that points agents at the canonical HTTP API and live install docs.",
+      "description": "Agentry skill for agent-native analytics, error logging, and deploy attribution over the Agentry HTTP API.",
       "source": "./plugin/agentry",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "homepage": "https://agentry.sh",
       "license": "MIT",
       "keywords": [
         "observability",
+        "logging",
+        "error-monitoring",
         "analytics",
         "deploys",
+        "deploy-attribution",
         "coding-agents"
       ],
       "category": "developer-tools",
