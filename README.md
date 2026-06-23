@@ -29,6 +29,8 @@ plugin/skill for Agentry.
 - `packages/mcp` - MCP server that returns the canonical Agentry skill handoff.
 - `plugin/agentry` - Claude Code plugin containing the Agentry skill.
 - `.claude-plugin/marketplace.json` - Claude Code marketplace catalog.
+- `plugins/agentry` - Codex plugin containing the Agentry skill and branding.
+- `.agents/plugins/marketplace.json` - Codex plugin marketplace catalog.
 
 The MCP server and skill do not proxy the Agentry API, ingest telemetry, or
 replace the live docs. Runtime apps write directly to Agentry's HTTP API.
@@ -49,6 +51,8 @@ replace the live docs. Runtime apps write directly to Agentry's HTTP API.
 - Skill repository: https://github.com/fr33dr4g0n/agentry-skill
 - Live skill: https://agentry.sh/skill/agentry/SKILL.md
 - Adapter manifest: https://api.agentry.sh/adapters
+- Codex marketplace catalog: https://github.com/fr33dr4g0n/agentry-public/blob/main/.agents/plugins/marketplace.json
+- Claude marketplace catalog: https://github.com/fr33dr4g0n/agentry-public/blob/main/.claude-plugin/marketplace.json
 - MCP registry name: `io.github.fr33dr4g0n/agentry-observability`
 
 ## MCP Server
@@ -83,3 +87,13 @@ curl -fsSL https://agentry.sh/skill/agentry/SKILL.md > ~/.claude/skills/agentry/
 
 The plugin in `plugin/agentry` bundles the same skill for Claude Code plugin
 marketplace installs.
+
+## Codex Plugin
+
+```bash
+codex plugin marketplace add fr33dr4g0n/agentry-public
+codex plugin add agentry@agentry
+```
+
+The plugin in `plugins/agentry` bundles the same skill for Codex plugin
+marketplace installs and includes Agentry logo metadata for Codex plugin cards.

@@ -1,6 +1,6 @@
 {
   "name": "@agentrysh/mcp",
-  "version": "0.0.29",
+  "version": "0.0.30",
   "mcpName": "io.github.fr33dr4g0n/agentry-observability",
   "description": "MCP handoff to the Agentry skill for agent-native analytics and logging.",
   "type": "module",
@@ -22,6 +22,8 @@
     "agentry",
     "mcp",
     "model-context-protocol",
+    "codex-plugin",
+    "claude-code",
     "ai-coding-agents",
     "agent-native",
     "observability",

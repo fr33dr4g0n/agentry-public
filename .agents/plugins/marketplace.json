@@ -1,0 +1,20 @@
+{
+  "name": "agentry",
+  "interface": {
+    "displayName": "Agentry"
+  },
+  "plugins": [
+    {
+      "name": "agentry",
+      "source": {
+        "source": "local",
+        "path": "./plugins/agentry"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Data & Analytics"
+    }
+  ]
+}

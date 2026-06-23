@@ -40,6 +40,8 @@ This server gives MCP clients one Agentry handoff:
 - Skill repository: https://github.com/fr33dr4g0n/agentry-skill
 - Live skill: https://agentry.sh/skill/agentry/SKILL.md
 - Adapter manifest: https://api.agentry.sh/adapters
+- Codex marketplace catalog: https://github.com/fr33dr4g0n/agentry-public/blob/main/.agents/plugins/marketplace.json
+- Claude marketplace catalog: https://github.com/fr33dr4g0n/agentry-public/blob/main/.claude-plugin/marketplace.json
 - MCP registry name: `io.github.fr33dr4g0n/agentry-observability`
 
 ## When This Applies

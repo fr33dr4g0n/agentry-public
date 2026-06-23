@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const SERVER_VERSION = "0.0.29";
+const SERVER_VERSION = "0.0.30";
 
 const LINKS = {
   website: "https://agentry.sh/",
@@ -13,6 +13,8 @@ const LINKS = {
   npm: "https://www.npmjs.com/package/@agentrysh/mcp",
   mcpRepository: "https://github.com/fr33dr4g0n/agentry-public",
   skillRepository: "https://github.com/fr33dr4g0n/agentry-skill",
+  codexMarketplaceCatalog: "https://github.com/fr33dr4g0n/agentry-public/blob/main/.agents/plugins/marketplace.json",
+  claudeMarketplaceCatalog: "https://github.com/fr33dr4g0n/agentry-public/blob/main/.claude-plugin/marketplace.json",
   mcpRegistryName: "io.github.fr33dr4g0n/agentry-observability"
 };
 
@@ -40,6 +42,8 @@ Public distribution:
 - NPM: ${LINKS.npm}
 - MCP repository: ${LINKS.mcpRepository}
 - Skill repository: ${LINKS.skillRepository}
+- Codex marketplace catalog: ${LINKS.codexMarketplaceCatalog}
+- Claude marketplace catalog: ${LINKS.claudeMarketplaceCatalog}
 - MCP registry name: ${LINKS.mcpRegistryName}
 
 This MCP server does not perform auth, install Agentry, ingest telemetry, query Agentry, proxy the API, or replace the skill.`;
