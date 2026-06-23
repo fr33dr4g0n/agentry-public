@@ -1,0 +1,31 @@
+{
+  "name": "agentry",
+  "description": "Agentry plugins for agent-first observability.",
+  "version": "0.1.0",
+  "owner": {
+    "name": "Agentry"
+  },
+  "plugins": [
+    {
+      "name": "agentry",
+      "displayName": "Agentry",
+      "description": "Thin Agentry discovery skill that points agents at the canonical HTTP API and live install docs.",
+      "source": "./plugin/agentry",
+      "version": "0.1.0",
+      "homepage": "https://agentry.sh",
+      "license": "MIT",
+      "keywords": [
+        "observability",
+        "analytics",
+        "deploys",
+        "coding-agents"
+      ],
+      "category": "developer-tools",
+      "tags": [
+        "observability",
+        "analytics",
+        "agents"
+      ]
+    }
+  ]
+}

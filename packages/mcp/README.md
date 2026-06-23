@@ -1,41 +1,45 @@
-# @agentrysh/mcp
+# Agentry MCP Server
 
-The canonical agentry entry point. Drop it into Claude Code, Cursor or any MCP-compatible AI and your assistant can read your app's errors, analytics and deploys directly — no dashboard, no docs, no query language to learn.
+This package is a thin MCP discovery wrapper for Agentry.
 
-## Install (Claude Code)
+It does not implement a second Agentry API client and it does not replace the
+Agentry skill. Its job is to make Agentry discoverable in MCP registries and
+then point the agent to the one canonical install path:
 
-```bash
-claude mcp add agentry -- npx -y @agentrysh/mcp
+```text
+https://agentry.sh/install.md
 ```
 
-Then in your session:
+## Install
 
-> set me up with agentry
+```bash
+npx -y @agentrysh/mcp
+```
 
-The agent will walk you through the GitHub device-flow login, mint an API key, create an agentry project, and hand you a paste-ready snippet for your app.
+MCP client config:
 
-## What you get
+```json
+{
+  "mcpServers": {
+    "agentry": {
+      "command": "npx",
+      "args": ["-y", "@agentrysh/mcp"]
+    }
+  }
+}
+```
 
-Once installed, your AI assistant can:
+## What It Exposes
 
-- **Read errors** — `agentry_list_cases`, `agentry_get_case` (with stack, breadcrumbs, deploy attribution)
-- **Run named queries** — `agentry_run_recipe` (14 canonical queries: DAU, funnels, retention, top errors, deploy health, weekly digest)
-- **Ask anything in HogQL** — `agentry_analytics_query`
-- **Send events** — `agentry_capture_test_event`, `agentry_record_deploy`, `agentry_track_test_event`
-- **Manage suppressions, webhooks, alerts** — full CRUD on the QoL layer
+- `start_agentry_install` tool: tells the agent to fetch `https://agentry.sh/install.md` and proceed.
+- `start_agentry_daily_use` tool: tells the agent to fetch `https://agentry.sh/agentry.md` and proceed.
+- `agentry://install`, `agentry://daily-use`, and `agentry://links` resources.
+- `install_agentry` and `use_agentry` prompts.
 
-## What agentry is
+The live docs remain authoritative:
 
-A small, agent-first observability backend. Three HTTP endpoints, one DSN:
-
-- `POST /v1/logs/{project_id}/`
-- `POST /v1/analytics/{project_id}/`
-- `POST /v1/deploys/{project_id}/`
-
-Send JSON. Your AI does the rest.
-
-See [agentry.sh](https://agentry.sh) for the full pitch.
-
-## License
-
-MIT
+- Install: https://agentry.sh/install.md
+- Skill: https://agentry.sh/skill/agentry/SKILL.md
+- Daily use: https://agentry.sh/agentry.md
+- API discovery: https://api.agentry.sh/
+- OpenAPI: https://api.agentry.sh/v1/openapi.json

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.fr33dr4g0n/agentry-observability",
+  "title": "Agentry Observability",
+  "description": "Points agents to the canonical Agentry install docs.",
+  "version": "0.0.21",
+  "websiteUrl": "https://agentry.sh",
+  "repository": {
+    "url": "https://github.com/fr33dr4g0n/agentry-public",
+    "source": "github",
+    "subfolder": "packages/mcp"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@agentrysh/mcp",
+      "version": "0.0.21",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

@@ -1,60 +1,41 @@
 {
   "name": "@agentrysh/mcp",
-  "version": "0.0.13",
-  "description": "agentry MCP server — the canonical entry point. Drop it into Claude Code, Cursor or any MCP-compatible AI and your assistant can read your app's errors, analytics and deploys directly.",
+  "version": "0.0.21",
+  "mcpName": "io.github.fr33dr4g0n/agentry-observability",
+  "description": "Thin MCP discovery wrapper that points agents to the canonical Agentry install skill and HTTP docs.",
   "type": "module",
-  "main": "./dist/index.js",
   "bin": {
-    "agentry-mcp": "./dist/index.js"
+    "agentry-mcp": "bin/agentry-mcp.js"
   },
   "files": [
-    "dist",
+    "bin",
     "README.md",
+    "server.json",
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -b",
-    "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "prepublishOnly": "tsc -b"
+    "build": "node --check bin/agentry-mcp.js",
+    "test": "node --check bin/agentry-mcp.js"
   },
   "keywords": [
     "agentry",
     "mcp",
     "model-context-protocol",
-    "claude-code",
-    "cursor",
     "observability",
-    "error-tracking",
-    "analytics"
+    "analytics",
+    "coding-agents"
   ],
   "license": "MIT",
-  "author": "Henrik Harju <harjuhenrik@gmail.com>",
   "homepage": "https://agentry.sh",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agentry/agentry.git",
+    "url": "git+https://github.com/fr33dr4g0n/agentry-public.git",
     "directory": "packages/mcp"
   },
   "bugs": {
-    "url": "https://github.com/agentry/agentry/issues"
+    "url": "https://github.com/fr33dr4g0n/agentry-public/issues"
   },
   "publishConfig": {
     "access": "public"
-  },
-  "engines": {
-    "node": ">=20"
-  },
-  "dependencies": {
-    "@agentrysh/shared": "^0.0.1",
-    "@jridgewell/trace-mapping": "^0.3.25",
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "@types/node": "^22.9.0",
-    "typescript": "^5.6.3",
-    "vitest": "^2.1.4"
   }
 }

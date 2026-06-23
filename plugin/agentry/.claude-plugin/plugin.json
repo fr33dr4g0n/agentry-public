@@ -1,0 +1,7 @@
+{
+  "name": "agentry",
+  "version": "0.1.0",
+  "description": "Agent-first error monitoring, product analytics, and deploy attribution over the Agentry HTTP API. Bundles the thin Agentry discovery skill.",
+  "author": { "name": "Agentry", "url": "https://agentry.sh" },
+  "homepage": "https://agentry.sh"
+}
