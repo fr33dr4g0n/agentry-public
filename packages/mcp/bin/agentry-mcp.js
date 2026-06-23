@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const SERVER_VERSION = "0.0.31";
+const SERVER_VERSION = "0.0.32";
 
 const LINKS = {
   website: "https://agentry.sh/",
@@ -18,12 +18,35 @@ const LINKS = {
   mcpRegistryName: "io.github.fr33dr4g0n/agentry-observability"
 };
 
+const SUPPORTED_SURFACES = [
+  "Codex",
+  "Claude Code",
+  "Cursor",
+  "VS Code / GitHub Copilot",
+  "Visual Studio / GitHub Copilot",
+  "GitHub Copilot coding agent",
+  "Devin Desktop / Windsurf Cascade",
+  "Cline",
+  "Roo Code",
+  "Continue",
+  "Zed",
+  "Gemini CLI",
+  "Aider",
+  "OpenCode",
+  "ChatGPT custom GPT Actions",
+  "generic MCP clients",
+  "AGENTS.md-aware agents"
+];
+
 const SKILL_HANDOFF_TEXT = `Agentry gives AI coding agents product analytics, error logging, and deploy attribution over one HTTP API.
 
 Canonical Agentry skill:
 ${LINKS.skill}
 
 Load or install that skill before doing Agentry work. The skill is the agent instruction layer; it routes setup to the canonical install flow and routes post-setup questions to the daily-use reference.
+
+Supported agent surfaces:
+${SUPPORTED_SURFACES.map((surface) => `- ${surface}`).join("\n")}
 
 When the skill is loaded:
 - Setup/install requests route to ${LINKS.install}
@@ -37,6 +60,7 @@ Source of truth:
 - Daily use: ${LINKS.reference}
 - API discovery: ${LINKS.discovery}
 - OpenAPI: ${LINKS.openapi}
+- Adapter manifest: ${LINKS.adapters}
 
 Public distribution:
 - NPM: ${LINKS.npm}
@@ -59,9 +83,9 @@ const RESOURCES = [
   {
     uri: "agentry://links",
     name: "Agentry canonical links",
-    description: "Canonical Agentry docs and API links.",
+    description: "Canonical Agentry docs, API links, and supported agent surfaces.",
     mimeType: "application/json",
-    text: JSON.stringify(LINKS, null, 2)
+    text: JSON.stringify({ ...LINKS, supportedSurfaces: SUPPORTED_SURFACES }, null, 2)
   }
 ];
 

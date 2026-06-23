@@ -23,17 +23,34 @@ agents can answer what users did, what broke, and what changed.
 
 ## What This Repository Contains
 
-This repository contains the public MCP server package and Claude Code
-plugin/skill for Agentry.
+This repository contains public discovery surfaces for Agentry across MCP,
+Claude Code, Codex, and agent IDE adapter ecosystems.
 
 - `packages/mcp` - MCP server that returns the canonical Agentry skill handoff.
 - `plugin/agentry` - Claude Code plugin containing the Agentry skill.
 - `.claude-plugin/marketplace.json` - Claude Code marketplace catalog.
 - `plugins/agentry` - Codex plugin containing the Agentry skill and branding.
 - `.agents/plugins/marketplace.json` - Codex plugin marketplace catalog.
+- `https://api.agentry.sh/adapters` - live adapter manifest for repo-local
+  instruction files used by AI coding IDEs and agent CLIs.
 
 The MCP server and skill do not proxy the Agentry API, ingest telemetry, or
 replace the live docs. Runtime apps write directly to Agentry's HTTP API.
+
+## Supported Agent Surfaces
+
+Agentry is distributed as a skill, MCP handoff, OpenAPI Action schema, and
+repo-local instruction adapters for the agent surfaces developers already use:
+
+- Codex and Claude Code.
+- Cursor, VS Code with GitHub Copilot, Visual Studio with GitHub Copilot, and
+  GitHub Copilot coding agent.
+- Devin Desktop/Windsurf Cascade, Cline, Roo Code, Continue, Zed, Gemini CLI,
+  Aider, and OpenCode.
+- ChatGPT custom GPT Actions, generic MCP clients, and AGENTS.md-aware agents.
+
+The adapter manifest is the canonical place to discover the current native
+file path for each client: https://api.agentry.sh/adapters.
 
 ## Canonical Docs
 

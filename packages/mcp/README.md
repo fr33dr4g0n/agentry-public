@@ -32,6 +32,21 @@ This server gives MCP clients one Agentry handoff:
 - It does not ingest telemetry, query Agentry, proxy auth, or replace the live
   API reference.
 
+## Supported Agent Surfaces
+
+Agentry can be discovered through this MCP package, the standalone skill, the
+OpenAPI schema, and repo-local adapters for:
+
+- Codex and Claude Code.
+- Cursor, VS Code with GitHub Copilot, Visual Studio with GitHub Copilot, and
+  GitHub Copilot coding agent.
+- Devin Desktop/Windsurf Cascade, Cline, Roo Code, Continue, Zed, Gemini CLI,
+  Aider, and OpenCode.
+- ChatGPT custom GPT Actions, generic MCP clients, and AGENTS.md-aware agents.
+
+Use https://api.agentry.sh/adapters for the current native adapter path for
+each client.
+
 ## Public Links
 
 - Website: https://agentry.sh/

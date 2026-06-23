@@ -97,3 +97,11 @@ above; they are authoritative and can update independently of adapters.
 - Codex marketplace catalog: <https://github.com/fr33dr4g0n/agentry-public/blob/main/.agents/plugins/marketplace.json>.
 - Claude marketplace catalog: <https://github.com/fr33dr4g0n/agentry-public/blob/main/.claude-plugin/marketplace.json>.
 - Adapter manifest: <https://api.agentry.sh/adapters>.
+
+## Adapter coverage
+
+The same skill and adapter manifest support Codex, Claude Code, Cursor, VS Code
+and Visual Studio with GitHub Copilot, GitHub Copilot coding agent, Devin
+Desktop/Windsurf Cascade, Cline, Roo Code, Continue, Zed, Gemini CLI, Aider,
+OpenCode, ChatGPT custom GPT Actions, generic MCP clients, and AGENTS.md-aware
+agents.
