@@ -48,6 +48,9 @@ repo-local instruction adapters for the agent surfaces developers already use:
 - Devin Desktop/Windsurf Cascade, Cline, Roo Code, Continue, Zed, Gemini CLI,
   Aider, and OpenCode.
 - ChatGPT custom GPT Actions, generic MCP clients, and AGENTS.md-aware agents.
+- AGENTS.md-compatible agents such as Jules, Factory, Amp, goose, Warp,
+  JetBrains Junie, Augment Code, Kilo Code, Phoenix, Semgrep, Ona, and UiPath
+  coded agents.
 
 The adapter manifest is the canonical place to discover the current native
 file path for each client: https://api.agentry.sh/adapters.

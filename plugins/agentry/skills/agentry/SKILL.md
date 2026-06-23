@@ -104,4 +104,6 @@ The same skill and adapter manifest support Codex, Claude Code, Cursor, VS Code
 and Visual Studio with GitHub Copilot, GitHub Copilot coding agent, Devin
 Desktop/Windsurf Cascade, Cline, Roo Code, Continue, Zed, Gemini CLI, Aider,
 OpenCode, ChatGPT custom GPT Actions, generic MCP clients, and AGENTS.md-aware
-agents.
+agents. The AGENTS.md adapter also covers compatible agents such as Jules,
+Factory, Amp, goose, Warp, JetBrains Junie, Augment Code, Kilo Code, Phoenix,
+Semgrep, Ona, and UiPath coded agents.
