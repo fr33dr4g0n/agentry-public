@@ -1,6 +1,6 @@
 {
   "name": "agentry",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agentry skill for agent-native analytics, error logging, and deploy attribution over the Agentry HTTP API.",
   "author": { "name": "Agentry", "url": "https://agentry.sh" },
   "homepage": "https://agentry.sh",
@@ -18,6 +18,6 @@
     "coding-agents"
   ],
   "skills": [
-    "./skills/agentry/SKILL.md"
+    "./skills/agentry"
   ]
 }

@@ -1,7 +1,7 @@
 {
   "name": "agentry",
   "description": "Agentry for Claude Code: agent-native analytics, error logging, and deploy attribution over the Agentry HTTP API.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "owner": {
     "name": "Agentry"
   },
@@ -10,7 +10,7 @@
       "name": "agentry",
       "description": "Agentry skill for agent-native analytics, error logging, and deploy attribution over the Agentry HTTP API.",
       "source": "./plugin/agentry",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "homepage": "https://agentry.sh",
       "repository": "https://github.com/fr33dr4g0n/agentry-public",
       "license": "MIT",
