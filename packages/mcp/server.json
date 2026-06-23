@@ -3,7 +3,7 @@
   "name": "io.github.fr33dr4g0n/agentry-observability",
   "title": "Agentry Observability",
   "description": "Agentry skill handoff for agent-native analytics and logging.",
-  "version": "0.0.26",
+  "version": "0.0.27",
   "websiteUrl": "https://agentry.sh",
   "repository": {
     "url": "https://github.com/fr33dr4g0n/agentry-public",
@@ -14,7 +14,7 @@
     {
       "registryType": "npm",
       "identifier": "@agentrysh/mcp",
-      "version": "0.0.26",
+      "version": "0.0.27",
       "transport": {
         "type": "stdio"
       }

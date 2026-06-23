@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const SERVER_VERSION = "0.0.26";
+const SERVER_VERSION = "0.0.27";
 
 const LINKS = {
   install: "https://agentry.sh/install.md",

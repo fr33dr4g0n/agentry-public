@@ -1,6 +1,6 @@
 {
   "name": "@agentrysh/mcp",
-  "version": "0.0.26",
+  "version": "0.0.27",
   "mcpName": "io.github.fr33dr4g0n/agentry-observability",
   "description": "MCP handoff to the Agentry skill for agent-native analytics and logging.",
   "type": "module",
@@ -30,6 +30,10 @@
     "coding-agents"
   ],
   "license": "MIT",
+  "author": {
+    "name": "Agentry",
+    "url": "https://agentry.sh"
+  },
   "homepage": "https://agentry.sh",
   "repository": {
     "type": "git",
