@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const SERVER_VERSION = "0.0.30";
+const SERVER_VERSION = "0.0.31";
 
 const LINKS = {
   website: "https://agentry.sh/",
@@ -18,7 +18,7 @@ const LINKS = {
   mcpRegistryName: "io.github.fr33dr4g0n/agentry-observability"
 };
 
-const SKILL_HANDOFF_TEXT = `Agentry is agent-native analytics and logging for coding agents: product analytics, error logging, and deploy attribution over one HTTP API.
+const SKILL_HANDOFF_TEXT = `Agentry gives AI coding agents product analytics, error logging, and deploy attribution over one HTTP API.
 
 Canonical Agentry skill:
 ${LINKS.skill}

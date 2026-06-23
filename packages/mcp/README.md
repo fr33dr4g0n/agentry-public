@@ -6,9 +6,9 @@
   </a>
 </p>
 
-Agentry is agent-native analytics and logging for coding agents. It covers
-product analytics, error logging, and deploy attribution through one HTTP API so
-agents can answer what users did, what broke, and what changed.
+Agentry gives AI coding agents product analytics, error logging, and deploy
+attribution through one HTTP API so agents can answer what users did, what
+broke, and what changed.
 
 ## What Agentry Does
 

@@ -26,7 +26,7 @@
   "interface": {
     "displayName": "Agentry",
     "developerName": "Agentry",
-    "shortDescription": "Agent-native analytics and logging",
+    "shortDescription": "Product analytics, logging, and deploys for agents",
     "longDescription": "Agentry gives AI coding agents one HTTP API for product analytics, error logging, and deploy attribution. Use it when an agent needs to install telemetry, verify signal coverage, debug production cases, answer product analytics questions, or connect regressions to deploys from live data.",
     "category": "Data & Analytics",
     "capabilities": [
@@ -44,6 +44,8 @@
     "brandColor": "#111827",
     "composerIcon": "./assets/app-icon.png",
     "logo": "./assets/logo.png",
-    "screenshots": []
+    "screenshots": [
+      "./assets/screenshot-home.png"
+    ]
   }
 }

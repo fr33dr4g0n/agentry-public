@@ -2,19 +2,37 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.fr33dr4g0n/agentry-observability",
   "title": "Agentry Observability",
-  "description": "Agentry skill handoff for agent-native analytics and logging.",
-  "version": "0.0.30",
+  "description": "Agentry skill handoff for product analytics, error logging, and deploy attribution.",
+  "version": "0.0.31",
   "websiteUrl": "https://agentry.sh",
   "repository": {
     "url": "https://github.com/fr33dr4g0n/agentry-public",
     "source": "github",
+    "id": "1239325672",
     "subfolder": "packages/mcp"
   },
+  "icons": [
+    {
+      "src": "https://agentry.sh/brand/agentry-icon-white-bg-black.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "512x512"
+      ]
+    },
+    {
+      "src": "https://agentry.sh/brand/agentry-lockup-light.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": [
+        "any"
+      ],
+      "theme": "dark"
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@agentrysh/mcp",
-      "version": "0.0.30",
+      "version": "0.0.31",
       "transport": {
         "type": "stdio"
       }
