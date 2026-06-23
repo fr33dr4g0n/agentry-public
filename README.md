@@ -20,8 +20,7 @@ agents can answer what users did, what broke, and what changed.
 This repository contains the public MCP server package and Claude Code
 plugin/skill for Agentry.
 
-- `packages/mcp` - MCP server that returns canonical Agentry install and
-  daily-use handoffs.
+- `packages/mcp` - MCP server that returns the canonical Agentry skill handoff.
 - `plugin/agentry` - Claude Code plugin containing the Agentry skill.
 - `.claude-plugin/marketplace.json` - Claude Code marketplace catalog.
 

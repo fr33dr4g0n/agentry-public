@@ -19,10 +19,10 @@ agents can answer what users did, what broke, and what changed.
 
 ## What This MCP Server Does
 
-This server gives MCP clients a small Agentry handoff surface:
+This server gives MCP clients one Agentry handoff:
 
-- It exposes install and daily-use handoffs as tools, resources, and prompts.
-- It keeps the actual setup flow in Agentry's canonical install docs.
+- It points agents to the canonical Agentry skill.
+- It keeps setup and daily-use routing inside that skill.
 - It does not ingest telemetry, query Agentry, proxy auth, or replace the live
   API reference.
 
@@ -38,13 +38,10 @@ verify, query, and act without a separate integration surface.
 
 ## MCP Surface
 
-- `start_agentry_install`: returns the canonical install handoff for agent-led
-  analytics, logging, error monitoring, deploy attribution, and telemetry setup.
-- `start_agentry_daily_use`: returns the canonical post-install handoff for
-  reading cases, analytics, deploys, query blueprints, event names, and saved
-  signal maps.
-- `agentry://install`, `agentry://daily-use`, and `agentry://links` resources.
-- `install_agentry` and `use_agentry` prompts.
+- `get_agentry_skill`: returns the canonical Agentry skill handoff.
+- `agentry://skill`: the same skill handoff as a resource.
+- `agentry://links`: canonical Agentry links as JSON.
+- `use_agentry_skill`: prompt that tells the agent to load or install the skill.
 
 ## Install The MCP Server
 
@@ -65,8 +62,10 @@ MCP client config:
 }
 ```
 
-After the MCP server is available, an agent should call the install handoff when
-the user asks to set up Agentry in a repo.
+After the MCP server is available, an agent should call `get_agentry_skill`
+when the user asks for Agentry, analytics, logging, error monitoring, product
+telemetry, deploy attribution, or production debugging. The returned skill
+handoff tells the agent where to load the canonical Agentry skill.
 
 The live docs remain authoritative:
 

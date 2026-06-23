@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const SERVER_VERSION = "0.0.24";
+const SERVER_VERSION = "0.0.25";
 
 const LINKS = {
   install: "https://agentry.sh/install.md",
@@ -11,44 +11,34 @@ const LINKS = {
   adapters: "https://api.agentry.sh/adapters"
 };
 
-const INSTALL_TEXT = `Agentry is agent-native analytics and logging for coding agents: product analytics, error logging, and deploy attribution over one HTTP API.
+const SKILL_HANDOFF_TEXT = `Agentry is agent-native analytics and logging for coding agents: product analytics, error logging, and deploy attribution over one HTTP API.
 
-Install Agentry by fetching ${LINKS.install} and following it exactly.
+Canonical Agentry skill:
+${LINKS.skill}
 
-Do not summarize the install doc back to the user. Proceed with the install flow from that document:
-resolve auth/project, inspect the repo, call the Agentry install planner, present the planner's approval message, wait for approval, save the signal map, instrument the approved signals, save the implementation report, and verify with Agentry before claiming success.
+Load or install that skill before doing Agentry work. The skill is the agent instruction layer; it routes setup to the canonical install flow and routes post-setup questions to the daily-use reference.
+
+When the skill is loaded:
+- Setup/install requests route to ${LINKS.install}
+- Product, reliability, case, analytics, or deploy questions after setup route to ${LINKS.reference}
+- Exact API shapes come from ${LINKS.openapi}
 
 Source of truth:
-- Install: ${LINKS.install}
 - Skill: ${LINKS.skill}
-- API discovery: ${LINKS.discovery}
-- OpenAPI: ${LINKS.openapi}`;
-
-const DAILY_TEXT = `Agentry gives coding agents production context for cases, analytics, and deploys.
-
-Use Agentry by fetching ${LINKS.reference} and following the day-to-day read model there.
-
-Start from the saved signal map, latest verify report, answer contracts, event names, and property keys. Then use cases, analytics, deploys, query blueprints, or custom HogQL only when the needed telemetry exists.
-
-Source of truth:
+- Install: ${LINKS.install}
 - Daily use: ${LINKS.reference}
 - API discovery: ${LINKS.discovery}
-- OpenAPI: ${LINKS.openapi}`;
+- OpenAPI: ${LINKS.openapi}
+
+This MCP server does not perform auth, install Agentry, ingest telemetry, query Agentry, proxy the API, or replace the skill.`;
 
 const RESOURCES = [
   {
-    uri: "agentry://install",
-    name: "Agentry install handoff",
-    description: "Install handoff for agent-led analytics, logging, error monitoring, and deploy attribution.",
+    uri: "agentry://skill",
+    name: "Agentry skill handoff",
+    description: "Canonical Agentry skill handoff for agent-native analytics, logging, and deploy attribution.",
     mimeType: "text/markdown",
-    text: INSTALL_TEXT
-  },
-  {
-    uri: "agentry://daily-use",
-    name: "Agentry daily-use handoff",
-    description: "Post-install handoff for reading Agentry cases, analytics, deploys, and signal maps.",
-    mimeType: "text/markdown",
-    text: DAILY_TEXT
+    text: SKILL_HANDOFF_TEXT
   },
   {
     uri: "agentry://links",
@@ -61,17 +51,8 @@ const RESOURCES = [
 
 const TOOLS = [
   {
-    name: "start_agentry_install",
-    description: "Returns the Agentry install handoff for analytics, telemetry, logging, error monitoring, production debugging, and deploy attribution setup. The handoff points the agent to https://agentry.sh/install.md.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {}
-    }
-  },
-  {
-    name: "start_agentry_daily_use",
-    description: "Returns the Agentry daily-use handoff for product, reliability, and deploy questions after Agentry is installed. The handoff points the agent to https://agentry.sh/agentry.md.",
+    name: "get_agentry_skill",
+    description: "Returns the canonical Agentry skill handoff. Relevant when the user asks for Agentry, analytics, logging, error monitoring, product telemetry, deploy attribution, or production debugging. This tool only points to the skill; it does not install anything or call the Agentry API.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -82,12 +63,8 @@ const TOOLS = [
 
 const PROMPTS = [
   {
-    name: "install_agentry",
-    description: "Install Agentry through the canonical agent-led install document."
-  },
-  {
-    name: "use_agentry",
-    description: "Answer production, product, reliability, or deploy questions using the canonical Agentry daily-use document."
+    name: "use_agentry_skill",
+    description: "Load or install the canonical Agentry skill before doing Agentry setup or daily-use work."
   }
 ];
 
@@ -146,12 +123,8 @@ function handleRequest(request) {
       return;
 
     case "tools/call":
-      if (params?.name === "start_agentry_install") {
-        result(id, textContent(INSTALL_TEXT));
-        return;
-      }
-      if (params?.name === "start_agentry_daily_use") {
-        result(id, textContent(DAILY_TEXT));
+      if (params?.name === "get_agentry_skill") {
+        result(id, textContent(SKILL_HANDOFF_TEXT));
         return;
       }
       error(id, -32602, `Unknown tool: ${params?.name || "(missing)"}`);
@@ -186,12 +159,8 @@ function handleRequest(request) {
       return;
 
     case "prompts/get":
-      if (params?.name === "install_agentry") {
-        result(id, promptMessage(`Install Agentry in this repo for agent-native analytics, logging, and deploy attribution. Fetch ${LINKS.install} and proceed exactly from that document.`));
-        return;
-      }
-      if (params?.name === "use_agentry") {
-        result(id, promptMessage(`Use Agentry to answer my production, product, reliability, or deploy question. Fetch ${LINKS.reference} and proceed from that document.`));
+      if (params?.name === "use_agentry_skill") {
+        result(id, promptMessage(`Load or install the canonical Agentry skill from ${LINKS.skill}. Follow the skill for Agentry setup and daily-use work.`));
         return;
       }
       error(id, -32602, `Unknown prompt: ${params?.name || "(missing)"}`);
