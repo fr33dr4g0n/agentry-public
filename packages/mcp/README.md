@@ -1,5 +1,11 @@
 # Agentry MCP Server
 
+<p>
+  <a href="https://agentry.sh">
+    <img src="https://agentry.sh/brand/agentry-lockup-light.svg" alt="Agentry" width="248">
+  </a>
+</p>
+
 Agentry is agent-native analytics and logging for coding agents. It covers
 product analytics, error logging, and deploy attribution through one HTTP API so
 agents can answer what users did, what broke, and what changed.
