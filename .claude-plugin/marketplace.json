@@ -8,7 +8,6 @@
   "plugins": [
     {
       "name": "agentry",
-      "displayName": "Agentry",
       "description": "Thin Agentry discovery skill that points agents at the canonical HTTP API and live install docs.",
       "source": "./plugin/agentry",
       "version": "0.1.0",
