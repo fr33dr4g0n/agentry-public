@@ -6,7 +6,6 @@
   "plugins": [
     {
       "name": "agentry",
-      "displayName": "Agentry Observability",
       "source": {
         "source": "local",
         "path": "./plugins/agentry"
@@ -15,9 +14,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "category": "Data & Analytics",
-      "description": "Agent-native product analytics, error logging, and deploy attribution for coding agents through one HTTP API.",
-      "icon": "./plugins/agentry/assets/icon.png"
+      "category": "Data & Analytics"
     }
   ]
 }

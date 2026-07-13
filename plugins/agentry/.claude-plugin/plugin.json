@@ -3,7 +3,7 @@
   "version": "0.1.2",
   "description": "Agentry skill for agent-native analytics, error logging, and deploy attribution over the Agentry HTTP API.",
   "author": { "name": "Agentry", "url": "https://agentry.sh" },
-  "homepage": "https://agentry.sh",
+  "homepage": "https://agentry.sh/?distribution_surface=claude_plugin",
   "repository": "https://github.com/fr33dr4g0n/agentry-public",
   "license": "MIT",
   "keywords": [

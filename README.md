@@ -27,9 +27,9 @@ This repository contains public discovery surfaces for Agentry across MCP,
 Claude Code, Codex, and agent IDE adapter ecosystems.
 
 - `packages/mcp` - MCP server that returns the canonical Agentry skill handoff.
-- `plugin/agentry` - Claude Code plugin containing the Agentry skill.
+- `plugins/agentry` - shared Claude Code and Codex plugin containing the
+  canonical Agentry skill.
 - `.claude-plugin/marketplace.json` - Claude Code marketplace catalog.
-- `plugins/agentry` - Codex plugin containing the Agentry skill and branding.
 - `.agents/plugins/marketplace.json` - Codex plugin marketplace catalog.
 - `https://api.agentry.sh/adapters` - live adapter manifest for repo-local
   instruction files used by AI coding IDEs and agent CLIs.
@@ -105,7 +105,7 @@ mkdir -p ~/.claude/skills/agentry
 curl -fsSL https://agentry.sh/skill/agentry/SKILL.md > ~/.claude/skills/agentry/SKILL.md
 ```
 
-The plugin in `plugin/agentry` bundles the same skill for Claude Code plugin
+The plugin in `plugins/agentry` bundles the same skill for Claude Code plugin
 marketplace installs.
 
 ## Codex Plugin
